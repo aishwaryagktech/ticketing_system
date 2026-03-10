@@ -1,0 +1,538 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+model UserRole {
+  id    String  @id @default(uuid())
+  name  String  @unique
+  label String
+
+  users User[]
+
+  @@map("roles")
+}
+
+enum UserType {
+  tenant_user
+  individual
+}
+
+enum TicketStatus {
+  new_ticket    @map("new")
+  open
+  in_progress
+  pending_user
+  resolved
+  closed
+}
+
+enum Priority {
+  p1
+  p2
+  p3
+  p4
+}
+
+enum TicketSource {
+  web_form
+  widget
+  email
+  api
+  bot_handoff
+}
+
+enum Sentiment {
+  positive
+  neutral
+  frustrated
+  critical
+}
+
+enum EscalationTrigger {
+  sla_breach
+  sentiment
+  complexity
+  vip
+  bot_handoff
+  user_unsatisfied
+}
+
+enum SubscriptionStatus {
+  active
+  past_due
+  cancelled
+  trialing
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model Product {
+  id                   String   @id @default(uuid())
+  name                 String
+  slug                 String   @unique
+  logo_base64          String?
+  primary_color        String   @default("#2563EB")
+  email_sender_name    String?
+  email_sender_address String?
+  email_sender_address_hash String?
+  api_key_hash         String?
+  plan_id              String
+  is_active            Boolean  @default(true)
+  created_by           String
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  tenants             Tenant[]
+  users               User[]
+  tickets             Ticket[]
+  sla_policies        SlaPolicy[]
+  escalation_rules    EscalationRule[]
+  kb_articles         KbArticle[]
+  kb_sources          KbSource[]
+  ai_provider_configs AiProviderConfig[]
+  plugin_config       PluginConfig?
+  feature_flags       FeatureFlag?
+  subscription        ProductSubscription?
+  audit_logs          AuditLog[]
+  escalation_logs     EscalationLog[]
+  notifications       Notification[]
+
+  @@map("products")
+}
+
+model Tenant {
+  id                String   @id @default(uuid())
+  product_id        String
+  name              String
+  slug              String
+  logo_base64       String?
+  custom_domain     String?
+  contact_email     String?
+  contact_email_hash String?
+  employee_count    Int?
+  plan_id           String?
+  onboarding_step   String   @default("welcome") // welcome | plan_selected | products | agents | ticket_settings | sla | escalation | kb | ai_bot | channels | branding | notifications | integrations | complete
+  is_active         Boolean  @default(true)
+  created_by        String
+  created_at        DateTime @default(now())
+
+  product         Product         @relation(fields: [product_id], references: [id])
+  plan            BillingPlan?    @relation(fields: [plan_id], references: [id])
+  users           User[]
+  tickets         Ticket[]
+  tenant_products TenantProduct[]
+  ticket_settings TenantTicketSettings?
+  channel_settings TenantChannelSettings?
+
+  @@unique([product_id, slug])
+  @@map("tenants")
+}
+
+model TenantProduct {
+  id          String   @id @default(uuid())
+  tenant_id   String
+  name        String
+  description String?
+  status      String   @default("active") // active | inactive
+  l0_model    String?
+  l0_provider String?
+  created_at  DateTime @default(now())
+
+  tenant        Tenant         @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  product_agents ProductAgent[]
+
+  @@map("tenant_products")
+}
+
+model ProductAgent {
+  id               String   @id @default(uuid())
+  tenant_product_id String
+  user_id          String
+  support_level    String   // L1 | L2 | L3
+  created_at       DateTime @default(now())
+
+  tenant_product TenantProduct @relation(fields: [tenant_product_id], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([tenant_product_id, user_id])
+  @@map("product_agents")
+}
+
+model TenantTicketSettings {
+  id                  String   @id @default(uuid())
+  tenant_id           String   @unique
+  ticket_prefix       String   @default("TKT")
+  default_priority    String   @default("p2")
+  categories          Json     @default("[]") // ["Billing","Technical",...]
+  attachment_limit_mb Int      @default(10)
+  assignment_rule      String   @default("round_robin") // round_robin | manual | skill_based
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@map("tenant_ticket_settings")
+}
+
+model User {
+  id                 String    @id @default(uuid())
+  product_id         String
+  tenant_id          String?
+  email              String
+  email_hash         String
+  password_hash      String?
+  name               String
+  first_name         String?
+  last_name          String?
+  phone              String?
+  job_title          String?
+  role_id            String
+  user_type          UserType
+  department         String?
+  avatar_base64      String?
+  active_model       String?
+  notification_prefs Json      @default("{}")
+  theme              String    @default("system")
+  is_active          Boolean   @default(true)
+  is_vip             Boolean   @default(false)
+  last_login_at      DateTime?
+  created_at         DateTime  @default(now())
+
+  product         Product        @relation(fields: [product_id], references: [id])
+  tenant          Tenant?        @relation(fields: [tenant_id], references: [id])
+  roleRef         UserRole       @relation(fields: [role_id], references: [id])
+  product_agents  ProductAgent[]
+
+  @@unique([product_id, email_hash])
+  @@index([product_id, role_id, is_active])
+  @@index([product_id, tenant_id, user_type])
+  @@map("users")
+}
+
+model Ticket {
+  id                   String       @id @default(uuid())
+  ticket_number        String       @unique
+  product_id           String
+  tenant_id            String?
+  created_by           String
+  assigned_to          String?
+  parent_ticket_id     String?
+  subject              String
+  description          String
+  status               TicketStatus @default(new_ticket)
+  priority             Priority
+  source               TicketSource
+  user_type            UserType
+  category             String?
+  sub_category         String?
+  department           String?
+  ai_confidence        Decimal?
+  sentiment            Sentiment?
+  sentiment_trend      String?
+  is_vip               Boolean      @default(false)
+  sla_deadline         DateTime?
+  sla_paused_at        DateTime?
+  sla_paused_duration  Int          @default(0)
+  sla_breached         Boolean      @default(false)
+  escalation_level     Int          @default(0)
+  resolved_at          DateTime?
+  closed_at            DateTime?
+  reopen_deadline      DateTime?
+  csat_score           Int?
+  csat_comment         String?
+  course_id            String?
+  course_name          String?
+  session_id           String?
+  created_at           DateTime     @default(now())
+  updated_at           DateTime     @updatedAt
+
+  product  Product         @relation(fields: [product_id], references: [id])
+  tenant   Tenant?         @relation(fields: [tenant_id], references: [id])
+  comments TicketComment[]
+
+  @@index([product_id, status, created_at])
+  @@index([product_id, tenant_id, status])
+  @@index([product_id, assigned_to, status])
+  @@index([product_id, sla_deadline])
+  @@index([product_id, sla_breached, escalation_level])
+  @@map("tickets")
+}
+
+model TicketComment {
+  id           String   @id @default(uuid())
+  ticket_id    String
+  product_id   String
+  author_id    String
+  body         String
+  is_internal  Boolean  @default(false)
+  is_bot       Boolean  @default(false)
+  sentiment    String?
+  ai_suggested Boolean  @default(false)
+  ai_accepted  Boolean  @default(false)
+  created_at   DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticket_id], references: [id])
+
+  @@index([ticket_id, created_at])
+  @@map("ticket_comments")
+}
+
+model SlaPolicy {
+  id                    String   @id @default(uuid())
+  product_id            String
+  priority              Priority
+  response_time_mins    Int
+  resolution_time_mins  Int
+  warning_threshold_pct Int      @default(75)
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@unique([product_id, priority])
+  @@map("sla_policies")
+}
+
+model EscalationRule {
+  id                     String            @id @default(uuid())
+  product_id             String
+  level                  Int
+  trigger_type           EscalationTrigger
+  trigger_threshold_mins Int?
+  sentiment_trigger      String?
+  action_assign_role     String
+  notify_roles           Json              @default("[]")
+  notify_sms             Boolean           @default(false)
+  is_active              Boolean           @default(true)
+  created_at             DateTime          @default(now())
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@map("escalation_rules")
+}
+
+model KbArticle {
+  id                String   @id @default(uuid())
+  product_id        String
+  tenant_product_id String?
+  title             String
+  body              String
+  images            Json     @default("[]")
+  category          String
+  audience          String
+  tags              Json     @default("[]")
+  is_published      Boolean  @default(false)
+  qdrant_point_id   String?
+  view_count        Int      @default(0)
+  helpful_count     Int      @default(0)
+  not_helpful_count Int      @default(0)
+  deflected_count   Int      @default(0)
+  is_flagged        Boolean  @default(false)
+  created_by        String
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@index([product_id, tenant_product_id, is_published, category])
+  @@map("kb_articles")
+}
+
+model KbSource {
+  id           String   @id @default(uuid())
+  product_id   String
+  tenant_id    String?
+  tenant_product_id String?
+  source_type  String   @default("crawled") // crawled | upload
+  url          String
+  title        String?
+  content_text String
+  content_hash String
+  status       String   @default("extracted") // extracted | failed
+  error        String?
+  created_by   String
+  created_at   DateTime @default(now())
+  updated_at   DateTime @default(now()) @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@unique([product_id, content_hash])
+  @@index([product_id, tenant_id, updated_at])
+  @@map("kb_sources")
+}
+
+model AiProviderConfig {
+  id                String   @id @default(uuid())
+  product_id        String?
+  provider_name     String
+  api_key_encrypted String
+  enabled           Boolean  @default(false)
+  available_models  Json
+  default_model     String?
+  custom_base_url   String?
+  created_by        String
+  created_at        DateTime @default(now())
+
+  product Product? @relation(fields: [product_id], references: [id])
+
+  @@map("ai_provider_configs")
+}
+
+model PluginConfig {
+  id                     String   @id @default(uuid())
+  product_id             String   @unique
+  chatbot_enabled        Boolean  @default(true)
+  form_enabled           Boolean  @default(true)
+  widget_position        String   @default("bottom_right")
+  allowed_domains        Json     @default("[]")
+  context_fields         Json     @default("[]")
+  custom_welcome_message String?
+  created_at             DateTime @default(now())
+  updated_at             DateTime @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@map("plugin_configs")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  product_id String
+  ticket_id  String?
+  actor_id   String?
+  action     String
+  from_value String?
+  to_value   String?
+  metadata   Json     @default("{}")
+  created_at DateTime @default(now())
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@index([ticket_id, created_at])
+  @@map("audit_logs")
+}
+
+model EscalationLog {
+  id             String   @id @default(uuid())
+  product_id     String
+  ticket_id      String
+  from_level     Int
+  to_level       Int
+  trigger_reason String
+  triggered_by   String
+  actor_id       String?
+  notified_users Json     @default("[]")
+  created_at     DateTime @default(now())
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@map("escalation_logs")
+}
+
+model Notification {
+  id            String   @id @default(uuid())
+  product_id    String
+  user_id       String
+  type          String
+  title         String
+  body          String
+  ticket_id     String?
+  is_read       Boolean  @default(false)
+  channels_sent Json     @default("[]")
+  created_at    DateTime @default(now())
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@index([user_id, is_read, created_at])
+  @@map("notifications")
+}
+
+model BillingPlan {
+  id                       String   @id @default(uuid())
+  name                     String
+  max_agents               Int
+  max_tickets_per_month    Int
+  price_inr                Decimal
+  price_usd                Decimal
+  overage_per_ticket_inr   Decimal  @default(0)
+  overage_per_ticket_usd   Decimal  @default(0)
+  features                 Json     @default("{}")
+  is_active                Boolean  @default(true)
+
+  tenants Tenant[]
+
+  @@map("billing_plans")
+}
+
+model ProductSubscription {
+  id                       String             @id @default(uuid())
+  product_id               String             @unique
+  plan_id                  String
+  status                   SubscriptionStatus
+  payment_provider         String
+  external_subscription_id String
+  current_period_start     DateTime
+  current_period_end       DateTime
+  tickets_used_this_month  Int                @default(0)
+  agents_count             Int                @default(0)
+  created_at               DateTime           @default(now())
+  updated_at               DateTime           @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@map("product_subscriptions")
+}
+
+model FeatureFlag {
+  id                     String   @id @default(uuid())
+  product_id             String   @unique
+  chatbot_enabled        Boolean  @default(true)
+  webform_enabled        Boolean  @default(true)
+  email_intake_enabled   Boolean  @default(true)
+  rest_api_enabled       Boolean  @default(true)
+  sms_alerts_enabled     Boolean  @default(false)
+  white_label_enabled    Boolean  @default(false)
+  billing_enforced       Boolean  @default(true)
+  ai_suggestions_enabled Boolean  @default(true)
+  kb_public_enabled      Boolean  @default(true)
+  updated_by             String
+  updated_at             DateTime @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@map("feature_flags")
+}
+
+model TenantChannelSettings {
+  id                 String   @id @default(uuid())
+  tenant_id          String   @unique
+  chat_enabled       Boolean  @default(true)
+  chat_position      String   @default("bottom-right")
+  chat_primary_color String   @default("#FACC15")
+  webform_enabled    Boolean  @default(true)
+  webform_path       String   @default("/support")
+  email_enabled      Boolean  @default(true)
+  support_email      String?  // optional freeform address like support@tenant.com
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+  default_product_id String?
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+
+  @@map("tenant_channel_settings")
+}
+
