@@ -97,7 +97,6 @@ model Product {
   updated_at           DateTime @updatedAt
 
   tenants             Tenant[]
-  users               User[]
   tickets             Ticket[]
   sla_policies        SlaPolicy[]
   escalation_rules    EscalationRule[]
@@ -147,10 +146,12 @@ model TenantProduct {
   tenant_id   String
   name        String
   description String?
+  website     String?
   status      String   @default("active") // active | inactive
   l0_model    String?
   l0_provider String?
   created_at  DateTime @default(now())
+  created_by  String?
 
   tenant        Tenant         @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   product_agents ProductAgent[]
@@ -190,18 +191,15 @@ model TenantTicketSettings {
 
 model User {
   id                 String    @id @default(uuid())
-  product_id         String
   tenant_id          String?
   email              String
   email_hash         String
   password_hash      String?
-  name               String
   first_name         String?
   last_name          String?
   phone              String?
   job_title          String?
   role_id            String
-  user_type          UserType
   department         String?
   avatar_base64      String?
   active_model       String?
@@ -212,14 +210,11 @@ model User {
   last_login_at      DateTime?
   created_at         DateTime  @default(now())
 
-  product         Product        @relation(fields: [product_id], references: [id])
   tenant          Tenant?        @relation(fields: [tenant_id], references: [id])
   roleRef         UserRole       @relation(fields: [role_id], references: [id])
   product_agents  ProductAgent[]
 
-  @@unique([product_id, email_hash])
-  @@index([product_id, role_id, is_active])
-  @@index([product_id, tenant_id, user_type])
+  @@unique([email_hash])
   @@map("users")
 }
 

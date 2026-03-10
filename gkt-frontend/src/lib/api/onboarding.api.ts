@@ -76,7 +76,7 @@ export const onboardingApi = {
       if (!r.ok) throw new Error('Failed to list products');
       return r.json();
     }),
-  createProduct: (data: { name: string; description?: string; status?: string }) =>
+  createProduct: (data: { name: string; description?: string; website?: string; status?: string }) =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/products`, {
       method: 'POST',
       body: JSON.stringify(data),

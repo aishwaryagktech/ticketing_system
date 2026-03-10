@@ -29,12 +29,15 @@ export default function SignupPage() {
 
   const isDark = mounted && theme === 'dark';
 
-  const bgPrimary = isDark ? '#0F172A' : '#FFFFFF';
-  const textPrimary = isDark ? '#F8FAFC' : '#111827';
+  const navyBackground = isDark ? '#020617' : '#0F172A';
+  const surfaceBackground = isDark ? '#020617' : '#F9FAFB';
+  const textPrimary = isDark ? '#E5E7EB' : '#0F172A';
   const textSecondary = isDark ? '#94A3B8' : '#4B5563';
-  const inputBg = isDark ? 'rgba(255,255,255,0.03)' : '#FFFFFF';
-  const inputBorder = isDark ? 'rgba(255,255,255,0.1)' : '#E5E7EB';
-  const accentBrand = '#FACC15';
+  const electricBlue = '#0EA5E9';
+  const cardBg = isDark ? '#020617' : '#FFFFFF';
+  const inputBg = isDark ? 'rgba(15,23,42,0.8)' : '#FFFFFF';
+  const inputBorder = isDark ? 'rgba(148,163,184,0.45)' : '#E5E7EB';
+  const accentBrand = '#0EA5E9';
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -91,26 +94,76 @@ export default function SignupPage() {
   return (
     <div
       style={{
-        display: 'flex',
         minHeight: '100vh',
-        background: bgPrimary,
-        color: textPrimary,
-        fontFamily: 'sans-serif',
         width: '100%',
+        padding: '32px 16px',
+        background: isDark
+          ? `radial-gradient(circle at top left, #1D4ED8 0, ${navyBackground} 45%, #020617 100%)`
+          : `radial-gradient(circle at top left, #FFFFFF 0, #F3F4F6 40%, #E5E7EB 100%)`,
+        color: textPrimary,
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif',
       }}
     >
-      {/* Left: form */}
       <div
         style={{
-          flex: '1 1 55%',
+          width: '100%',
+          maxWidth: 1120,
+          margin: '0 auto',
           display: 'flex',
           flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '40px',
+          gap: 40,
         }}
       >
-        <div style={{ width: '100%', maxWidth: 520 }}>
+        {/* Brand header (matches landing page) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: isDark ? '#1D4ED8' : '#DBEAFE',
+              border: `1px solid ${inputBorder}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <div
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 999,
+                background: electricBlue,
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <span style={{ fontSize: 15, fontWeight: 700 }}>GKT AI Ticketing</span>
+            <span style={{ fontSize: 11, color: textSecondary }}>Modern AI workspace for education teams</span>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 0.85fr)',
+            gap: 40,
+            alignItems: 'center',
+          }}
+        >
+          {/* Left: signup form card */}
+          <div
+            style={{
+              borderRadius: 18,
+              padding: 24,
+              border: `1px solid ${inputBorder}`,
+              background: cardBg,
+              boxShadow: isDark
+                ? '0 26px 70px rgba(15,23,42,0.95)'
+                : '0 22px 60px rgba(15,23,42,0.25)',
+            }}
+          >
+        <div style={{ width: '100%' }}>
           <div
             style={{
               display: 'flex',
@@ -138,10 +191,10 @@ export default function SignupPage() {
               style={{
                 flex: 1,
                 padding: '12px',
-                background: textPrimary,
-                color: bgPrimary,
+                background: electricBlue,
+                color: '#0B1120',
                 border: 'none',
-                borderRadius: '4px 4px 0 0',
+                borderRadius: '8px 8px 0 0',
                 fontWeight: 700,
                 fontSize: 14,
               }}
@@ -365,73 +418,78 @@ export default function SignupPage() {
             </p>
           </form>
         </div>
-      </div>
+        </div>
 
-      {/* Right: simple visual */}
-      <div
-        style={{
-          flex: '1 1 45%',
-          position: 'relative',
-          overflow: 'hidden',
-          background: bgPrimary,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '60px',
-          minWidth: 0,
-        }}
-      >
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            width: '120%',
-            background: isDark ? '#1E293B' : '#E2E8F0',
-            clipPath: 'polygon(18% 0, 100% 0, 100% 100%, 0% 100%)',
-            zIndex: 0,
-          }}
-        />
-
-        <div
-          style={{
-            position: 'relative',
-            zIndex: 1,
-            maxWidth: 380,
-            padding: 20,
-            borderRadius: 16,
-            border: `1px solid ${inputBorder}`,
-            background: isDark ? '#020617' : '#FFFFFF',
-            boxShadow: isDark
-              ? '0 18px 45px rgba(15,23,42,0.8)'
-              : '0 16px 40px rgba(15,23,42,0.12)',
-          }}
-        >
-          <div style={{ fontSize: 13, color: textSecondary, marginBottom: 8 }}>Example tenant</div>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>ABC University</div>
-          <div style={{ fontSize: 12, color: textSecondary, marginBottom: 12 }}>
-            Student success, IT helpdesk, and exam support all running on one AI ticketing workspace.
-          </div>
+          {/* Right: tenant summary illustration */}
           <div
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-              gap: 8,
-              fontSize: 11,
+              borderRadius: 18,
+              border: `1px solid ${inputBorder}`,
+              background: isDark ? '#020617' : surfaceBackground,
+              position: 'relative',
+              overflow: 'hidden',
+              padding: 20,
+              boxShadow: isDark
+                ? '0 26px 70px rgba(15,23,42,0.95)'
+                : '0 22px 60px rgba(15,23,42,0.25)',
             }}
           >
-            <div>
-              <div style={{ color: textSecondary, marginBottom: 2 }}>Agents</div>
-              <div style={{ fontWeight: 700 }}>18</div>
-            </div>
-            <div>
-              <div style={{ color: textSecondary, marginBottom: 2 }}>Tickets / month</div>
-              <div style={{ fontWeight: 700 }}>3.2k</div>
-            </div>
-            <div>
-              <div style={{ color: textSecondary, marginBottom: 2 }}>L0 deflection</div>
-              <div style={{ fontWeight: 700, color: accentBrand }}>68%</div>
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: isDark
+                  ? 'radial-gradient(circle at top left, rgba(56,189,248,0.25), transparent 55%)'
+                  : 'radial-gradient(circle at top left, rgba(56,189,248,0.15), transparent 55%)',
+                opacity: 0.7,
+              }}
+            />
+
+            <div style={{ position: 'relative', zIndex: 1 }}>
+              <div style={{ fontSize: 13, color: textSecondary, marginBottom: 8 }}>Example tenant</div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>ABC University</div>
+              <div style={{ fontSize: 12, color: textSecondary, marginBottom: 12 }}>
+                Student success, IT helpdesk, and exam support all running on one AI ticketing workspace.
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                  gap: 10,
+                  fontSize: 11,
+                  marginBottom: 16,
+                }}
+              >
+                <div>
+                  <div style={{ color: textSecondary, marginBottom: 2 }}>Agents</div>
+                  <div style={{ fontWeight: 700 }}>18</div>
+                </div>
+                <div>
+                  <div style={{ color: textSecondary, marginBottom: 2 }}>Tickets / month</div>
+                  <div style={{ fontWeight: 700 }}>3.2k</div>
+                </div>
+                <div>
+                  <div style={{ color: textSecondary, marginBottom: 2 }}>L0 deflection</div>
+                  <div style={{ fontWeight: 700, color: electricBlue }}>68%</div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  borderRadius: 14,
+                  border: `1px solid ${inputBorder}`,
+                  background: cardBg,
+                  padding: 14,
+                  fontSize: 11,
+                }}
+              >
+                <div style={{ color: textSecondary, marginBottom: 6 }}>Provisioning steps</div>
+                <ul style={{ margin: 0, paddingLeft: 18, color: textSecondary }}>
+                  <li>Create tenant workspace</li>
+                  <li>Add initial admins & agents</li>
+                  <li>Connect channels and SLAs</li>
+                </ul>
+              </div>
             </div>
           </div>
         </div>

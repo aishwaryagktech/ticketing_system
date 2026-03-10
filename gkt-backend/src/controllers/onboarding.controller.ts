@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { prisma } from '../db/postgres';
 import { AuthRequest } from '../middleware/auth';
-import { encryptPII, hashSearchable } from '../utils/encrypt';
+import { encryptPII, decryptPII, hashSearchable } from '../utils/encrypt';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import pdfParse from 'pdf-parse';
@@ -110,7 +110,26 @@ export async function listTenantProducts(req: AuthRequest, res: Response): Promi
       where: { tenant_id: tenantId },
       orderBy: { created_at: 'asc' },
     });
-    res.json(list);
+    const withCreatorEmail = await Promise.all(
+      list.map(async (tp) => {
+        let created_by_email: string | null = null;
+        if (tp.created_by) {
+          try {
+            const user = await prisma.user.findUnique({
+              where: { id: tp.created_by },
+              select: { email: true },
+            });
+            if (user?.email) {
+              created_by_email = decryptPII(user.email);
+            }
+          } catch {
+            created_by_email = null;
+          }
+        }
+        return { ...tp, created_by_email };
+      })
+    );
+    res.json(withCreatorEmail);
   } catch (e) {
     console.error('listTenantProducts error:', e);
     res.status(500).json({ error: 'Failed to list products' });
@@ -119,11 +138,12 @@ export async function listTenantProducts(req: AuthRequest, res: Response): Promi
 
 export async function createTenantProduct(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
+  const userId = req.user?.id;
   if (!tenantId) {
     res.status(403).json({ error: 'Tenant required' });
     return;
   }
-  const { name, description, status } = req.body;
+  const { name, description, status, website } = req.body;
   if (!name || typeof name !== 'string') {
     res.status(400).json({ error: 'name required' });
     return;
@@ -134,7 +154,9 @@ export async function createTenantProduct(req: AuthRequest, res: Response): Prom
         tenant_id: tenantId,
         name: name.trim(),
         description: description?.trim() || null,
+        website: website?.trim() || null,
         status: status === 'inactive' ? 'inactive' : 'active',
+        created_by: userId ?? null,
       },
     });
     res.status(201).json(created);
@@ -146,8 +168,7 @@ export async function createTenantProduct(req: AuthRequest, res: Response): Prom
 
 export async function listAgents(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
-  const productId = req.user?.product_id;
-  if (!tenantId || !productId) {
+  if (!tenantId) {
     res.status(403).json({ error: 'Tenant required' });
     return;
   }
@@ -155,13 +176,55 @@ export async function listAgents(req: AuthRequest, res: Response): Promise<void>
     const users = await prisma.user.findMany({
       where: {
         tenant_id: tenantId,
-        product_id: productId,
         roleRef: { name: { in: ['l1_agent', 'l2_agent', 'l3_agent', 'tenant_admin'] } },
         is_active: true,
       },
-      include: { product_agents: { include: { tenant_product: true } } },
+      include: { product_agents: { include: { tenant_product: true } }, roleRef: true },
     });
-    res.json(users);
+
+    const shaped = users.map((u) => {
+      let email: string | null = null;
+      let first_name: string | null = null;
+      let last_name: string | null = null;
+      try {
+        if (u.email) email = decryptPII(u.email);
+      } catch {
+        email = null;
+      }
+      try {
+        if (u.first_name) first_name = decryptPII(u.first_name);
+      } catch {
+        first_name = null;
+      }
+      try {
+        if (u.last_name) last_name = decryptPII(u.last_name);
+      } catch {
+        last_name = null;
+      }
+
+      const assigned_products =
+        u.product_agents?.map((pa) => ({
+          id: pa.tenant_product_id,
+          name: pa.tenant_product?.name ?? null,
+        })) ?? [];
+
+      const primary_support_level =
+        u.roleRef?.name === 'l2_agent' ? 'L2' : u.roleRef?.name === 'l3_agent' ? 'L3' : 'L1';
+
+      return {
+        id: u.id,
+        email,
+        first_name,
+        last_name,
+        role: u.roleRef?.name ?? null,
+        is_active: u.is_active,
+        assigned_products,
+        primary_support_level,
+        created_at: u.created_at,
+      };
+    });
+
+    res.json(shaped);
   } catch (e) {
     console.error('listAgents error:', e);
     res.status(500).json({ error: 'Failed to list agents' });
@@ -170,13 +233,12 @@ export async function listAgents(req: AuthRequest, res: Response): Promise<void>
 
 export async function inviteAgent(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
-  const productId = req.user?.product_id;
-  if (!tenantId || !productId) {
+  if (!tenantId) {
     res.status(403).json({ error: 'Tenant required' });
     return;
   }
-  const { name, email, role, assigned_products, support_level } = req.body;
-  // assigned_products: array of tenant_product_id; support_level: L1|L2|L3
+  const { name, email, role, assigned_products } = req.body;
+  // assigned_products: array of tenant_product_id
   if (!name || !email) {
     res.status(400).json({ error: 'name and email required' });
     return;
@@ -184,7 +246,7 @@ export async function inviteAgent(req: AuthRequest, res: Response): Promise<void
   try {
     const emailHash = hashSearchable(email);
     const existing = await prisma.user.findFirst({
-      where: { product_id: productId, email_hash: emailHash },
+      where: { tenant_id: tenantId, email_hash: emailHash },
     });
     if (existing) {
       res.status(409).json({ error: 'User with this email already exists' });
@@ -192,7 +254,14 @@ export async function inviteAgent(req: AuthRequest, res: Response): Promise<void
     }
     const tempPassword = Math.random().toString(36).slice(-10);
     const passwordHash = await bcrypt.hash(tempPassword, 10);
-    const desiredRoleName = role === 'tenant_admin' ? 'tenant_admin' : role === 'l2_agent' ? 'l2_agent' : role === 'l3_agent' ? 'l3_agent' : 'l1_agent';
+    const desiredRoleName =
+      role === 'tenant_admin'
+        ? 'tenant_admin'
+        : role === 'l2_agent'
+        ? 'l2_agent'
+        : role === 'l3_agent'
+        ? 'l3_agent'
+        : 'l1_agent';
     const roleRecord = await prisma.userRole.upsert({
       where: { name: desiredRoleName },
       update: {},
@@ -201,18 +270,19 @@ export async function inviteAgent(req: AuthRequest, res: Response): Promise<void
 
     const user = await prisma.user.create({
       data: {
-        product_id: productId,
         tenant_id: tenantId,
         email: encryptPII(email),
         email_hash: emailHash,
         password_hash: passwordHash,
-        name: encryptPII(name.trim()),
+        first_name: encryptPII(name.trim()),
+        last_name: null,
         role_id: roleRecord.id,
-        user_type: 'tenant_user',
       },
     });
     const assignments = Array.isArray(assigned_products) ? assigned_products : [];
-    const level = support_level === 'L2' ? 'L2' : support_level === 'L3' ? 'L3' : 'L1';
+    // Derive support level strictly from role, not from request body
+    const level =
+      desiredRoleName === 'l2_agent' ? 'L2' : desiredRoleName === 'l3_agent' ? 'L3' : 'L1';
     for (const tpId of assignments) {
       await prisma.productAgent.create({
         data: { tenant_product_id: tpId, user_id: user.id, support_level: level },

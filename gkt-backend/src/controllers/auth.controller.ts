@@ -36,7 +36,7 @@ export async function register(req: Request, res: Response): Promise<void> {
 
     const email_hash = hashSearchable(email);
     const existingUser = await prisma.user.findFirst({
-      where: { product_id: product.id, email_hash },
+      where: { email_hash },
     });
 
     if (existingUser) {
@@ -45,8 +45,9 @@ export async function register(req: Request, res: Response): Promise<void> {
     }
 
     // Create tenant for this company
-    const slugBase = company.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    const tenantSlug = slugBase || `tenant-${Date.now()}`;
+    // Always add a short random suffix to guarantee uniqueness for (product_id, slug)
+    const base = company.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'tenant';
+    const tenantSlug = `${base}-${Date.now().toString(36)}`;
 
     const tenant = await prisma.tenant.create({
       data: {
@@ -63,6 +64,7 @@ export async function register(req: Request, res: Response): Promise<void> {
     const password_hash = await bcrypt.hash(password, 10);
     const fullName = `${first_name} ${last_name}`.trim();
 
+    // Signup always gets tenant_admin role
     const roleRecord = await prisma.userRole.upsert({
       where: { name: 'tenant_admin' },
       update: {},
@@ -71,18 +73,15 @@ export async function register(req: Request, res: Response): Promise<void> {
 
     const user = await prisma.user.create({
       data: {
-        product_id: product.id,
         tenant_id: tenant.id,
         email: encryptPII(email),
         email_hash,
         password_hash,
-        name: encryptPII(fullName),
-        first_name,
-        last_name,
+        first_name: encryptPII(first_name),
+        last_name: encryptPII(last_name),
         phone,
         job_title,
-        role_id: roleRecord.id,
-        user_type: 'tenant_user',
+        role_id: roleRecord.id, // tenant_admin
       },
     });
 
@@ -96,7 +95,6 @@ export async function register(req: Request, res: Response): Promise<void> {
         email: decryptedEmail,
         name: decryptedName,
         role: roleRecord.name,
-        product_id: user.product_id,
         tenant_id: user.tenant_id,
       },
     });
@@ -131,15 +129,44 @@ export async function login(req: Request, res: Response): Promise<void> {
     }
 
     const decryptedEmail = decryptPII(user.email);
-    const decryptedName = decryptPII(user.name);
+
+    // First/last name now stored as encrypted PII.
+    let decryptedName: string | null = null;
+    try {
+      if (user.first_name && user.last_name && user.first_name !== user.last_name) {
+        const fn = decryptPII(user.first_name);
+        const ln = decryptPII(user.last_name);
+        decryptedName = `${fn} ${ln}`.trim();
+      } else if (user.first_name) {
+        decryptedName = decryptPII(user.first_name);
+      } else if (user.last_name) {
+        decryptedName = decryptPII(user.last_name);
+      }
+    } catch {
+      decryptedName = null;
+    }
 
     const roleName = user.roleRef?.name || 'user';
+
+    // Look up tenant to derive product_id and onboarding step
+    let onboarding_step: string | null = null;
+    let productIdForToken: string | undefined;
+    if (user.tenant_id) {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: user.tenant_id },
+        select: { onboarding_step: true, name: true, product_id: true },
+      });
+      if (tenant) {
+        onboarding_step = tenant.onboarding_step;
+        productIdForToken = tenant.product_id;
+      }
+    }
 
     const payload = {
       id: user.id,
       email: decryptedEmail, // put raw email in JWT for client convenience
       role: roleName,
-      product_id: user.product_id,
+      product_id: productIdForToken,
       tenant_id: user.tenant_id || undefined,
     };
 
@@ -152,24 +179,15 @@ export async function login(req: Request, res: Response): Promise<void> {
       data: { last_login_at: new Date() },
     });
 
-    let onboarding_step: string | null = null;
-    if (user.tenant_id) {
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: user.tenant_id },
-        select: { onboarding_step: true, name: true },
-      });
-      if (tenant) onboarding_step = tenant.onboarding_step;
-    }
-
     res.status(200).json({
       token,
       refresh_token,
       user: {
         id: user.id,
         email: decryptedEmail,
-        name: decryptedName,
+        name: decryptedName ?? undefined,
         role: roleName,
-        product_id: user.product_id,
+        product_id: productIdForToken,
         tenant_id: user.tenant_id,
         onboarding_step: onboarding_step ?? undefined,
       },

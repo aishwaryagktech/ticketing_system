@@ -32,6 +32,11 @@ BEGIN
     SELECT 1
     FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'role'
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'role_id'
   ) THEN
     UPDATE "users" u
     SET "role_id" = r."id"
@@ -49,9 +54,18 @@ BEGIN
   END IF;
 END $$;
 
--- 4) Enforce NOT NULL on role_id (after backfill)
-ALTER TABLE "users"
-ALTER COLUMN "role_id" SET NOT NULL;
+-- 4) Enforce NOT NULL on role_id (after backfill), only if column exists
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'role_id'
+  ) THEN
+    ALTER TABLE "users"
+    ALTER COLUMN "role_id" SET NOT NULL;
+  END IF;
+END $$;
 
 -- 5) Drop legacy users.role column and Role enum type
 DO $$

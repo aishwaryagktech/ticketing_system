@@ -11,6 +11,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 type ConfigSection =
   | 'overview'
   | 'products'
+  | 'people'
   | 'agents'
   | 'ticket-settings'
   | 'sla'
@@ -25,6 +26,9 @@ type TenantProduct = {
   name: string;
   description?: string | null;
   status: string;
+  website?: string | null;
+  created_by?: string | null;
+  created_by_email?: string | null;
 };
 
 type Agent = any;
@@ -2419,7 +2423,7 @@ function BrandingInline(props: BrandingInlineProps) {
 }
 
 export default function TenantDashboardPage() {
-  const { theme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const { user, hydrate, clearAuth } = useAuthStore();
   const [mounted, setMounted] = useState(false);
   const [activeConfig, setActiveConfig] = useState<ConfigSection>('overview');
@@ -2428,6 +2432,7 @@ export default function TenantDashboardPage() {
   const [products, setProducts] = useState<TenantProduct[]>([]);
   const [productName, setProductName] = useState('');
   const [productDescription, setProductDescription] = useState('');
+  const [productWebsite, setProductWebsite] = useState('');
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsSaving, setProductsSaving] = useState(false);
   const [productsError, setProductsError] = useState('');
@@ -2449,6 +2454,10 @@ export default function TenantDashboardPage() {
   const [plansError, setPlansError] = useState('');
   const [showPlansModal, setShowPlansModal] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [showProductModal, setShowProductModal] = useState(false);
+  const [showPeopleModal, setShowPeopleModal] = useState(false);
+  const [peopleFirstName, setPeopleFirstName] = useState('');
+  const [peopleLastName, setPeopleLastName] = useState('');
 
   useEffect(() => {
     hydrate();
@@ -2505,15 +2514,15 @@ export default function TenantDashboardPage() {
 
   const isDark = theme === 'dark';
 
-  const bgPrimary = isDark ? '#020617' : '#F9FAFB';
+  const bgPrimary = isDark ? '#020617' : '#F3F4F6';
   const bgSurface = isDark ? '#020617' : '#FFFFFF';
   const bgSurfaceElevated = isDark ? '#020617' : '#FFFFFF';
   const textPrimary = isDark ? '#E5E7EB' : '#020617';
   const textSecondary = isDark ? '#9CA3AF' : '#4B5563';
   const borderSubtle = isDark ? 'rgba(148, 163, 184, 0.35)' : '#E5E7EB';
-  const accentBrand = '#FACC15';
-  const accentBrandSoft = isDark ? 'rgba(250, 204, 21, 0.08)' : 'rgba(234, 179, 8, 0.08)';
-  const accentBrandBorder = isDark ? 'rgba(250, 204, 21, 0.4)' : 'rgba(234, 179, 8, 0.4)';
+  const accentBrand = isDark ? '#0EA5E9' : '#2563EB';
+  const accentBrandSoft = isDark ? 'rgba(59, 130, 246, 0.18)' : '#DBEAFE';
+  const accentBrandBorder = isDark ? 'rgba(96, 165, 250, 0.7)' : '#93C5FD';
   const accentChipBg = isDark ? 'rgba(34, 197, 94, 0.14)' : '#DCFCE7';
   const accentChipText = isDark ? '#4ADE80' : '#166534';
   const inputBg = isDark ? '#020617' : '#FFFFFF';
@@ -2522,6 +2531,7 @@ export default function TenantDashboardPage() {
   const displayName = (user as any)?.first_name
     ? `${(user as any).first_name}`
     : user?.name || 'there';
+  const avatarInitial = (displayName || 'U').charAt(0).toUpperCase();
 
   const handleLogout = () => {
     clearAuth();
@@ -2592,7 +2602,7 @@ export default function TenantDashboardPage() {
         display: 'flex',
         background: bgPrimary,
         color: textPrimary,
-        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
+        fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif',
       }}
     >
       {/* Left rail / navigation */}
@@ -2610,23 +2620,28 @@ export default function TenantDashboardPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 6px 4px 4px' }}>
           <div
             style={{
-              width: 26,
-              height: 26,
-              borderRadius: '10px',
-              background: accentBrand,
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: accentBrandSoft,
+              border: `1px solid ${accentBrandBorder}`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              fontSize: 14,
-              fontWeight: 800,
-              color: '#111827',
             }}
           >
-            G
+            <div
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 999,
+                background: accentBrand,
+              }}
+            />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontSize: 13, fontWeight: 700 }}>GKT Ticketing</span>
-            <span style={{ fontSize: 11, color: textSecondary }}>Tenant workspace</span>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>GKT AI Ticketing</span>
+            <span style={{ fontSize: 11, color: textSecondary }}>Modern AI workspace for education teams</span>
           </div>
         </div>
 
@@ -2663,82 +2678,42 @@ export default function TenantDashboardPage() {
           </Link>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <span
+        {/* Primary entities directly under dashboard */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={() => setActiveConfig('products')}
             style={{
-              fontSize: 11,
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              color: textSecondary,
-              padding: '0 8px',
-            }}
-          >
-            Operations
-          </span>
-          <Link
-            href="/admin/agents"
-            style={{
-              padding: '7px 10px',
+              width: '100%',
+              textAlign: 'left',
+              padding: '8px 10px',
               borderRadius: '10px',
-              textDecoration: 'none',
-              color: textSecondary,
+              border: 'none',
+              background: activeConfig === 'products' ? accentBrandSoft : 'transparent',
+              color: activeConfig === 'products' ? textPrimary : textSecondary,
               fontSize: 13,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
+              cursor: 'pointer',
             }}
           >
-            <span>Agents</span>
-            <span style={{ fontSize: 11 }}>Manage L1 / L2 / L3</span>
-          </Link>
-          <Link
-            href="/admin/tenants"
+            Products
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveConfig('people')}
             style={{
-              padding: '7px 10px',
+              width: '100%',
+              textAlign: 'left',
+              padding: '8px 10px',
               borderRadius: '10px',
-              textDecoration: 'none',
-              color: textSecondary,
+              border: 'none',
+              background: activeConfig === 'people' ? accentBrandSoft : 'transparent',
+              color: activeConfig === 'people' ? textPrimary : textSecondary,
               fontSize: 13,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
+              cursor: 'pointer',
             }}
           >
-            <span>Products & queues</span>
-            <span style={{ fontSize: 11 }}>Routing & capacity</span>
-          </Link>
-          <Link
-            href="/admin/kb"
-            style={{
-              padding: '7px 10px',
-              borderRadius: '10px',
-              textDecoration: 'none',
-              color: textSecondary,
-              fontSize: 13,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <span>Knowledge base</span>
-            <span style={{ fontSize: 11 }}>Docs & AI training</span>
-          </Link>
-          <Link
-            href="/admin/sla"
-            style={{
-              padding: '7px 10px',
-              borderRadius: '10px',
-              textDecoration: 'none',
-              color: textSecondary,
-              fontSize: 13,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <span>SLA & escalation</span>
-            <span style={{ fontSize: 11 }}>Targets & rules</span>
-          </Link>
+            People
+          </button>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -2754,7 +2729,6 @@ export default function TenantDashboardPage() {
             Configuration
           </span>
           {[
-            { key: 'products', label: 'Products' },
             { key: 'agents', label: 'Agents' },
             { key: 'ticket-settings', label: 'Ticket settings' },
             { key: 'sla', label: 'SLA configuration' },
@@ -2861,693 +2835,436 @@ export default function TenantDashboardPage() {
           padding: '20px 26px 24px 26px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 18,
         }}
       >
-        {/* Header */}
         <div
           style={{
+            width: '100%',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
+            flexDirection: 'column',
+            gap: 18,
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 12, color: textSecondary }}>Welcome back, {displayName}</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Tenant overview</h1>
-              <span
-                style={{
-                  fontSize: 11,
-                  padding: '3px 9px',
-                  borderRadius: '999px',
-                  background: accentChipBg,
-                  color: accentChipText,
-                  fontWeight: 600,
-                }}
-              >
-                Live workspace
-              </span>
-            </div>
-            <span style={{ fontSize: 12, color: textSecondary }}>{tenantName}</span>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
-              style={{
-                padding: '7px 12px',
-                borderRadius: '999px',
-                border: `1px solid ${borderSubtle}`,
-                background: isDark ? '#020617' : '#FFFFFF',
-                fontSize: 12,
-                color: textSecondary,
-                cursor: 'pointer',
-              }}
-            >
-              Today
-            </button>
-            <button
-              style={{
-                padding: '8px 14px',
-                borderRadius: '999px',
-                border: 'none',
-                background: accentBrand,
-                fontSize: 12,
-                fontWeight: 700,
-                color: '#111827',
-                cursor: 'pointer',
-              }}
-            >
-              New ticket
-            </button>
-          </div>
-        </div>
-
-        {/* Top stats row */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: 14,
-          }}
-        >
-          {statCard({ label: 'Open tickets', value: '42', change: '+8 since yesterday', changeTone: 'good' })}
-          {statCard({ label: 'Today\'s new', value: '19', change: 'L0 deflected 47%', changeTone: 'good' })}
-          {statCard({ label: 'Breached SLAs', value: '3', change: '2 P1 • 1 P2', changeTone: 'bad' })}
-          {statCard({ label: 'Avg. first response', value: '14m', change: 'Target 15m', changeTone: 'neutral' })}
-        </div>
-
-        {/* Middle + bottom area: overview vs configuration panels */}
-        {activeConfig === 'overview' ? (
-          <>
-            {/* Middle row: tickets & routing */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1.05fr)',
-                gap: 16,
-              }}
-            >
-              {/* Ticket activity */}
-              <div
-                style={{
-                  borderRadius: '20px',
-                  border: `1px solid ${borderSubtle}`,
-                  background: bgSurface,
-                  padding: '16px 18px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>Ticket flow (last 24 hours)</span>
-                    <span style={{ fontSize: 11, color: textSecondary }}>L0 deflection, routed queues, and resolutions</span>
-                  </div>
-                  <span style={{ fontSize: 11, color: textSecondary }}>All products</span>
-                </div>
-
-                <div
-                  style={{
-                    marginTop: 4,
-                    borderRadius: '14px',
-                    background: isDark ? '#020617' : '#F3F4F6',
-                    padding: '14px 12px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 10,
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      gap: 10,
-                      alignItems: 'center',
-                      fontSize: 11,
-                      color: textSecondary,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 999,
-                        background: accentBrand,
-                      }}
-                    ></span>
-                    <span>L0 bot resolved</span>
-                    <span style={{ opacity: 0.7 }}>• 27</span>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      gap: 10,
-                      alignItems: 'center',
-                      fontSize: 11,
-                      color: textSecondary,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 999,
-                        background: isDark ? '#38BDF8' : '#0EA5E9',
-                      }}
-                    ></span>
-                    <span>Handed to agents</span>
-                    <span style={{ opacity: 0.7 }}>• 34</span>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      gap: 10,
-                      alignItems: 'center',
-                      fontSize: 11,
-                      color: textSecondary,
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 999,
-                        background: isDark ? '#F97316' : '#EA580C',
-                      }}
-                    ></span>
-                    <span>Breached SLA</span>
-                    <span style={{ opacity: 0.7 }}>• 3</span>
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop: 8,
-                      borderRadius: '10px',
-                      overflow: 'hidden',
-                      height: 76,
-                      background: isDark ? '#020617' : '#E5E7EB',
-                      position: 'relative',
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        backgroundImage:
-                          'linear-gradient(135deg, rgba(250, 204, 21, 0.9), rgba(96, 165, 250, 0.9))',
-                        opacity: isDark ? 0.22 : 0.18,
-                      }}
-                    ></div>
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 10,
-                        borderRadius: 12,
-                        border: `1px dashed ${borderSubtle}`,
-                        borderStyle: 'dashed',
-                      }}
-                    ></div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Queues */}
-              <div
-                style={{
-                  borderRadius: '20px',
-                  border: `1px solid ${borderSubtle}`,
-                  background: bgSurface,
-                  padding: '16px 18px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>Queues & workload</span>
-                    <span style={{ fontSize: 11, color: textSecondary }}>Product-level routing view</span>
-                  </div>
-                  <span style={{ fontSize: 11, color: textSecondary }}>Rewire · All priorities</span>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-                  {[
-                    { label: 'Rewire • L1', open: 12, waiting: 4 },
-                    { label: 'Rewire • L2', open: 7, waiting: 2 },
-                    { label: 'Admissions • L1', open: 6, waiting: 1 },
-                  ].map((q) => (
-                    <div
-                      key={q.label}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: '8px 10px',
-                        borderRadius: '12px',
-                        background: isDark ? '#020617' : '#F9FAFB',
-                        border: `1px solid ${borderSubtle}`,
-                      }}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <span style={{ fontSize: 12, fontWeight: 600 }}>{q.label}</span>
-                        <span style={{ fontSize: 11, color: textSecondary }}>
-                          {q.open} open • {q.waiting} waiting reply
-                        </span>
-                      </div>
-                      <span style={{ fontSize: 11, color: textSecondary }}>View queue →</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Bottom row: setup & knowledge */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1.1fr)',
-                gap: 16,
-              }}
-            >
-              {/* Setup checklist */}
-              <div
-                style={{
-                  borderRadius: '20px',
-                  border: `1px solid ${borderSubtle}`,
-                  background: bgSurface,
-                  padding: '16px 18px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10,
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>Workspace setup</span>
-                    <span style={{ fontSize: 11, color: textSecondary }}>
-                      Configure channels, AI bot, and white-label branding.
-                    </span>
-                  </div>
-                  <Link
-                    href="/onboarding"
-                    style={{
-                      fontSize: 11,
-                      color: isDark ? '#93C5FD' : '#2563EB',
-                      textDecoration: 'none',
-                    }}
-                  >
-                    Open guided setup →
-                  </Link>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-                  {[
-                    {
-                      label: 'Branding & white-label',
-                      description: 'Upload logo, set colors, and configure support domain.',
-                      href: '/setup/branding',
-                    },
-                    {
-                      label: 'Channels & widgets',
-                      description: 'Connect chat, webform, and support email.',
-                      href: '/setup/channels',
-                    },
-                    {
-                      label: 'L0 AI bot',
-                      description: 'Pick provider/model and map to products.',
-                      href: '/setup/ai-bot',
-                    },
-                    {
-                      label: 'SLA & escalation',
-                      description: 'Define response targets and escalation rules.',
-                      href: '/setup/sla',
-                    },
-                  ].map((item) => (
-                    <Link
-                      key={item.label}
-                      href={item.href}
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'flex-start',
-                        padding: '8px 10px',
-                        borderRadius: '12px',
-                        textDecoration: 'none',
-                        color: textPrimary,
-                        background: isDark ? '#020617' : '#F9FAFB',
-                        border: `1px solid ${borderSubtle}`,
-                        fontSize: 12,
-                        gap: 10,
-                      }}
-                    >
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                        <span style={{ fontWeight: 600 }}>{item.label}</span>
-                        <span style={{ fontSize: 11, color: textSecondary }}>{item.description}</span>
-                      </div>
-                      <span style={{ fontSize: 11, color: textSecondary }}>Configure →</span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-
-              {/* Knowledge highlights */}
-              <div
-                style={{
-                  borderRadius: '20px',
-                  border: `1px solid ${borderSubtle}`,
-                  background: bgSurface,
-                  padding: '16px 18px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 10,
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>Knowledge base coverage</span>
-                    <span style={{ fontSize: 11, color: textSecondary }}>
-                      Docs powering L0 deflection and agent assist.
-                    </span>
-                  </div>
-                  <Link
-                    href="/setup/knowledge-base"
-                    style={{
-                      fontSize: 11,
-                      color: isDark ? '#93C5FD' : '#2563EB',
-                      textDecoration: 'none',
-                    }}
-                  >
-                    Manage sources →
-                  </Link>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      padding: '8px 10px',
-                      borderRadius: '12px',
-                      background: isDark ? '#020617' : '#F9FAFB',
-                      border: `1px solid ${borderSubtle}`,
-                    }}
-                  >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>Articles (draft + published)</span>
-                      <span style={{ fontSize: 11, color: textSecondary }}>Rewire • Getting started • Billing</span>
-                    </div>
-                    <span style={{ fontSize: 14, fontWeight: 700 }}>36</span>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      padding: '8px 10px',
-                      borderRadius: '12px',
-                      background: isDark ? '#020617' : '#F9FAFB',
-                      border: `1px solid ${borderSubtle}`,
-                    }}
-                  >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>Connected sources</span>
-                      <span style={{ fontSize: 11, color: textSecondary }}>Docs • URLs • Uploads</span>
-                    </div>
-                    <span style={{ fontSize: 14, fontWeight: 700 }}>9</span>
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 4,
-                      padding: '8px 10px',
-                      borderRadius: '12px',
-                      background: accentBrandSoft,
-                      border: `1px solid ${accentBrandBorder}`,
-                      fontSize: 11,
-                      color: textSecondary,
-                    }}
-                  >
-                    <span style={{ fontWeight: 600, color: textPrimary }}>Tip for better L0 answers</span>
-                    <span>
-                      Upload your onboarding flows, syllabus mapping, and common troubleshooting guides so the bot can
-                      deflect repetitive tickets.
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          // Configuration detail panel, stays in dashboard theme
-          <div
+          {/* Header / theme + user */}
+          <header
             style={{
-              borderRadius: '20px',
-              border: `1px solid ${borderSubtle}`,
-              background: bgSurface,
-              padding: '18px 20px',
-              marginTop: 4,
               display: 'flex',
-              flexDirection: 'column',
-              gap: 14,
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              paddingBottom: 12,
+              borderBottom: `1px solid ${borderSubtle}`,
+              gap: 16,
             }}
           >
-            {activeConfig === 'products' && (
-              <>
-                <div style={{ marginBottom: 4, fontSize: 13, color: accentBrand, fontWeight: 600 }}>Step 1</div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px 0' }}>Add Products</h2>
-                <p style={{ fontSize: 13, color: textSecondary, margin: '0 0 18px 0' }}>
-                  Add the products or services you want to provide support for. Agents will be assigned to these later.
-                </p>
-
-                {productsError && (
-                  <div
-                    style={{
-                      padding: 10,
-                      background: 'rgba(239,68,68,0.08)',
-                      borderRadius: 10,
-                      color: '#ef4444',
-                      marginBottom: 16,
-                      fontSize: 12,
-                    }}
-                  >
-                    {productsError}
-                  </div>
-                )}
-
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!productName.trim()) return;
-                    setProductsError('');
-                    setProductsSaving(true);
-                    try {
-                      const created = (await onboardingApi.createProduct({
-                        name: productName.trim(),
-                        description: productDescription.trim() || undefined,
-                      })) as TenantProduct;
-                      setProducts((prev) => [...prev, created]);
-                      setProductName('');
-                      setProductDescription('');
-                    } catch {
-                      setProductsError('Failed to add product');
-                    } finally {
-                      setProductsSaving(false);
-                    }
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button
+                type="button"
+                onClick={() => setTheme(isDark ? 'light' : 'dark')}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 10px',
+                  borderRadius: 999,
+                  border: `1px solid ${borderSubtle}`,
+                  background: isDark ? '#020617' : '#EEF2FF',
+                  color: textSecondary,
+                  fontSize: 11,
+                  cursor: 'pointer',
+                }}
+                aria-label="Toggle theme"
+              >
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 12,
+                    height: 12,
+                    borderRadius: 999,
+                    border: `1px solid ${borderSubtle}`,
+                    background: isDark ? accentBrand : '#F9FAFB',
                   }}
-                  style={{ marginBottom: 20 }}
+                />
+                <span>{isDark ? 'Dark' : 'Light'} mode</span>
+              </button>
+
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '4px 10px',
+                  borderRadius: 999,
+                  border: `1px solid ${borderSubtle}`,
+                  background: isDark ? '#020617' : '#FFFFFF',
+                }}
+              >
+                <div
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: '999px',
+                    background: isDark ? '#1E293B' : '#DBEAFE',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: isDark ? '#E5E7EB' : '#1E3A8A',
+                  }}
                 >
+                  {avatarInitial}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>{displayName}</span>
+                  <button
+                    type="button"
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      padding: 0,
+                      margin: 0,
+                      fontSize: 11,
+                      color: textSecondary,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    Profile & settings
+                  </button>
+                </div>
+              </div>
+            </div>
+          </header>
+
+          {/* Main content: overview is cleared; config panels remain in sidebar */}
+          {activeConfig === 'overview' ? (
+            <div style={{ padding: '24px 0' }}>
+              <h1 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px 0' }}>Tenant overview</h1>
+              <p style={{ fontSize: 13, color: textSecondary, margin: 0 }}>
+                Use the sidebar to configure products, agents, and settings.
+              </p>
+            </div>
+          ) : (
+            // Configuration detail panel, stays in dashboard theme
+            <div
+              style={{
+                borderRadius: '20px',
+                border: `1px solid ${borderSubtle}`,
+                background: bgSurface,
+                padding: '18px 20px',
+                marginTop: 4,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 14,
+              }}
+            >
+              {activeConfig === 'products' && (
+                <>
                   <div
                     style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.1fr)',
-                      gap: 10,
-                      marginBottom: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginBottom: 8,
                     }}
                   >
                     <div>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Product Name
-                      </label>
-                      <input
-                        value={productName}
-                        onChange={(e) => setProductName(e.target.value)}
-                        placeholder="e.g. Rewire AI"
-                        style={{
-                          width: '100%',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${borderSubtle}`,
-                          background: inputBg,
-                          color: textPrimary,
-                          fontSize: 13,
-                        }}
-                      />
+                      <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px 0' }}>Products</h2>
+                      <p style={{ fontSize: 13, color: textSecondary, margin: 0 }}>
+                        List of products and services this tenant supports.
+                      </p>
                     </div>
-                    <div>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Description (optional)
-                      </label>
-                      <input
-                        value={productDescription}
-                        onChange={(e) => setProductDescription(e.target.value)}
-                        placeholder="Short description"
-                        style={{
-                          width: '100%',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${borderSubtle}`,
-                          background: inputBg,
-                          color: textPrimary,
-                          fontSize: 13,
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={productsSaving || !productName.trim()}
-                    style={{
-                      padding: '9px 18px',
-                      borderRadius: 8,
-                      background: accentBrand,
-                      color: '#000',
-                      border: 'none',
-                      fontWeight: 600,
-                      fontSize: 13,
-                      cursor: productsSaving || !productName.trim() ? 'not-allowed' : 'pointer',
-                      opacity: productsSaving || !productName.trim() ? 0.7 : 1,
-                    }}
-                  >
-                    {productsSaving ? 'Adding...' : 'Add Product'}
-                  </button>
-                </form>
-
-                {productsLoading ? (
-                  <p style={{ fontSize: 12, color: textSecondary }}>Loading...</p>
-                ) : products.length > 0 ? (
-                  <div style={{ marginBottom: 18 }}>
-                    <div
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProductsError('');
+                        setShowProductModal(true);
+                      }}
                       style={{
-                        fontSize: 12,
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        border: 'none',
+                        background: accentBrand,
+                        color: '#0B1120',
+                        fontSize: 13,
                         fontWeight: 600,
-                        color: textSecondary,
-                        marginBottom: 6,
+                        cursor: 'pointer',
                       }}
                     >
-                      Your products
+                      Add product
+                    </button>
+                  </div>
+
+                  {productsError && (
+                    <div
+                      style={{
+                        padding: 10,
+                        background: 'rgba(239,68,68,0.08)',
+                        borderRadius: 10,
+                        color: '#ef4444',
+                        marginBottom: 12,
+                        fontSize: 12,
+                      }}
+                    >
+                      {productsError}
                     </div>
-                    <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                  )}
+
+                  {productsLoading ? (
+                    <p style={{ fontSize: 12, color: textSecondary }}>Loading products…</p>
+                  ) : products.length > 0 ? (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        borderRadius: 10,
+                        border: `1px solid ${borderSubtle}`,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '2.2fr 2fr 2.8fr 1.8fr 1.2fr',
+                          padding: '8px 12px',
+                          background: isDark ? '#020617' : '#F3F4F6',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: textSecondary,
+                        }}
+                      >
+                        <span>Product</span>
+                        <span>Website (optional)</span>
+                        <span>Description</span>
+                        <span>Created by</span>
+                        <span style={{ textAlign: 'right' }}>Status</span>
+                      </div>
                       {products.map((p) => (
-                        <li
+                        <div
                           key={p.id}
                           style={{
-                            padding: '10px 12px',
-                            border: `1px solid ${borderSubtle}`,
-                            borderRadius: 10,
-                            marginBottom: 6,
-                            display: 'flex',
-                            justifyContent: 'space-between',
+                            display: 'grid',
+                            gridTemplateColumns: '2.2fr 2fr 2.8fr 1.8fr 1.2fr',
+                            padding: '9px 12px',
+                            borderTop: `1px solid ${borderSubtle}`,
                             alignItems: 'center',
+                            fontSize: 12,
+                            background: isDark ? '#020617' : '#FFFFFF',
                           }}
                         >
-                          <div>
-                            <span style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</span>
-                            {p.description && (
-                              <span
-                                style={{
-                                  color: textSecondary,
-                                  fontSize: 12,
-                                  marginLeft: 6,
-                                }}
-                              >
-                                {p.description}
-                              </span>
-                            )}
+                          <div style={{ fontWeight: 600, color: textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.name}
                           </div>
-                          <span
+                          <div style={{ color: textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.website || '—'}
+                          </div>
+                          <div
                             style={{
-                              fontSize: 11,
-                              padding: '3px 7px',
-                              borderRadius: 6,
-                              background: isDark ? 'rgba(34,197,94,0.15)' : '#DCFCE7',
-                              color: '#16a34a',
+                              color: textSecondary,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
                             }}
                           >
-                            {p.status}
-                          </span>
-                        </li>
+                            {p.description || '—'}
+                          </div>
+                          <div style={{ color: textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.created_by_email || '—'}
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <span
+                              style={{
+                                fontSize: 11,
+                                padding: '3px 7px',
+                                borderRadius: 999,
+                                background:
+                                  p.status === 'inactive'
+                                    ? isDark
+                                      ? 'rgba(148,163,184,0.15)'
+                                      : '#E5E7EB'
+                                    : isDark
+                                    ? 'rgba(34,197,94,0.15)'
+                                    : '#DCFCE7',
+                                color: p.status === 'inactive' ? textSecondary : '#16a34a',
+                              }}
+                            >
+                              {p.status === 'inactive' ? 'Inactive' : 'Active'}
+                            </span>
+                          </div>
+                        </div>
                       ))}
-                    </ul>
-                  </div>
-                ) : (
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        padding: 18,
+                        border: `1px dashed ${borderSubtle}`,
+                        borderRadius: 12,
+                        fontSize: 12,
+                        color: textSecondary,
+                      }}
+                    >
+                      No products yet. Click &quot;Add product&quot; to create your first product.
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeConfig === 'people' && (
+                <>
                   <div
                     style={{
-                      padding: 18,
-                      border: `1px dashed ${borderSubtle}`,
-                      borderRadius: 12,
-                      marginBottom: 18,
-                      textAlign: 'center',
-                      color: textSecondary,
-                      fontSize: 12,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      marginBottom: 8,
                     }}
                   >
-                    No products yet. Add at least one to continue.
+                    <div>
+                      <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px 0' }}>People</h2>
+                      <p style={{ fontSize: 13, color: textSecondary, margin: 0 }}>
+                        Tenant admins and support agents for this workspace.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowPeopleModal(true)}
+                      style={{
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        border: 'none',
+                        background: accentBrand,
+                        color: '#0B1120',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Add people
+                    </button>
                   </div>
-                )}
 
-                <button
-                  type="button"
-                  disabled={products.length === 0}
-                  onClick={async () => {
-                    if (products.length === 0) return;
-                    try {
-                      await onboardingApi.setStep('agents');
-                      setActiveConfig('agents');
-                    } catch {
-                      setProductsError('Failed to update step');
-                    }
-                  }}
-                  style={{
-                    padding: '10px 20px',
-                    borderRadius: 10,
-                    background: accentBrand,
-                    color: '#000',
-                    border: 'none',
-                    fontWeight: 700,
-                    fontSize: 13,
-                    cursor: products.length === 0 ? 'not-allowed' : 'pointer',
-                    opacity: products.length === 0 ? 0.6 : 1,
-                    alignSelf: 'flex-start',
-                    marginTop: 4,
-                  }}
-                >
-                  Continue to Invite Agents
-                </button>
-              </>
-            )}
+                  {agentsError && (
+                    <div
+                      style={{
+                        padding: 10,
+                        background: 'rgba(239,68,68,0.08)',
+                        borderRadius: 10,
+                        color: '#ef4444',
+                        marginBottom: 12,
+                        fontSize: 12,
+                      }}
+                    >
+                      {agentsError}
+                    </div>
+                  )}
 
-            {activeConfig === 'agents' && (
+                  {agentsLoading ? (
+                    <p style={{ fontSize: 12, color: textSecondary }}>Loading people…</p>
+                  ) : agents.length > 0 ? (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        borderRadius: 10,
+                        border: `1px solid ${borderSubtle}`,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1.8fr 2.2fr 1.4fr 1.4fr 2.2fr',
+                          padding: '8px 12px',
+                          background: isDark ? '#020617' : '#F3F4F6',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: textSecondary,
+                        }}
+                      >
+                        <span>Name</span>
+                        <span>Email</span>
+                        <span>Role</span>
+                        <span>Support level</span>
+                        <span>Assigned products</span>
+                      </div>
+                      {agents.map((a: any) => (
+                        <div
+                          key={a.id}
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns: '1.8fr 2.2fr 1.4fr 1.4fr 2.2fr',
+                            padding: '9px 12px',
+                            borderTop: `1px solid ${borderSubtle}`,
+                            alignItems: 'center',
+                            fontSize: 12,
+                            background: isDark ? '#020617' : '#FFFFFF',
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              color: textPrimary,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {a.first_name || a.last_name
+                              ? `${a.first_name || ''} ${a.last_name || ''}`.trim()
+                              : '—'}
+                          </div>
+                          <div
+                            style={{
+                              color: textSecondary,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {a.email || '—'}
+                          </div>
+                          <div style={{ color: textSecondary, textTransform: 'capitalize' }}>
+                            {(a.role || '').replace(/_/g, ' ') || '—'}
+                          </div>
+                          <div style={{ color: textSecondary }}>
+                            {a.role && a.role.startsWith('l')
+                              ? a.primary_support_level || 'L1'
+                              : '—'}
+                          </div>
+                          <div
+                            style={{
+                              color: textSecondary,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {Array.isArray(a.assigned_products) && a.assigned_products.length > 0
+                              ? a.assigned_products
+                                  .map((p: any) => p.name)
+                                  .filter(Boolean)
+                                  .join(', ')
+                              : '—'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        padding: 18,
+                        border: `1px dashed ${borderSubtle}`,
+                        borderRadius: 12,
+                        fontSize: 12,
+                        color: textSecondary,
+                      }}
+                    >
+                      No people yet. Use &quot;Add people&quot; to invite admins or agents.
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeConfig === 'agents' && (
               <>
                 <div style={{ marginBottom: 4, fontSize: 13, color: accentBrand, fontWeight: 600 }}>Step 2</div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px 0' }}>Invite Support Agents</h2>
@@ -4035,6 +3752,594 @@ export default function TenantDashboardPage() {
           </div>
         )}
 
+        {showPeopleModal && (
+          <div
+            onClick={() => {
+                  if (!agentsSaving) setShowPeopleModal(false);
+            }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.55)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 20,
+              zIndex: 1000,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: 'min(520px, 96vw)',
+                background: bgSurface,
+                borderRadius: 16,
+                border: `1px solid ${borderSubtle}`,
+                padding: 18,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>Add person</div>
+                  <div style={{ fontSize: 12, color: textSecondary }}>
+                    Create a tenant admin or support agent for this workspace.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!agentsSaving) setShowPeopleModal(false);
+                  }}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: textSecondary,
+                    cursor: 'pointer',
+                    fontSize: 18,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+
+              {agentsError && (
+                <div
+                  style={{
+                    padding: 10,
+                    background: 'rgba(239,68,68,0.08)',
+                    borderRadius: 10,
+                    color: '#ef4444',
+                    marginBottom: 12,
+                    fontSize: 12,
+                  }}
+                >
+                  {agentsError}
+                </div>
+              )}
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  const fullName = `${peopleFirstName} ${peopleLastName}`.trim();
+                  if (!fullName || !agentEmail.trim()) return;
+                  setAgentsError('');
+                  setAgentsSaving(true);
+                  try {
+                    await onboardingApi.inviteAgent({
+                      name: fullName,
+                      email: agentEmail.trim(),
+                      role: agentRole,
+                      assigned_products: agentRole === 'tenant_admin' ? [] : agentProducts,
+                    });
+                    const list = await onboardingApi.getAgents();
+                    setAgents(Array.isArray(list) ? list : []);
+                    setPeopleFirstName('');
+                    setPeopleLastName('');
+                    setAgentEmail('');
+                    setAgentProducts([]);
+                    setShowPeopleModal(false);
+                  } catch {
+                    setAgentsError('Failed to add person');
+                  } finally {
+                    setAgentsSaving(false);
+                  }
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                    marginBottom: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.1fr)',
+                      gap: 10,
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: textSecondary,
+                          marginBottom: 4,
+                        }}
+                      >
+                        First name
+                      </label>
+                      <input
+                        value={peopleFirstName}
+                        onChange={(e) => setPeopleFirstName(e.target.value)}
+                        placeholder="Rahul"
+                        style={{
+                          width: '100%',
+                          padding: '9px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: inputBg,
+                          color: textPrimary,
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: textSecondary,
+                          marginBottom: 4,
+                        }}
+                      >
+                        Last name
+                      </label>
+                      <input
+                        value={peopleLastName}
+                        onChange={(e) => setPeopleLastName(e.target.value)}
+                        placeholder="Sharma"
+                        style={{
+                          width: '100%',
+                          padding: '9px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: inputBg,
+                          color: textPrimary,
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.1fr)',
+                      gap: 10,
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: textSecondary,
+                          marginBottom: 4,
+                        }}
+                      >
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        value={agentEmail}
+                        onChange={(e) => setAgentEmail(e.target.value)}
+                        placeholder="rahul@company.com"
+                        style={{
+                          width: '100%',
+                          padding: '9px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: inputBg,
+                          color: textPrimary,
+                          fontSize: 13,
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.1fr)',
+                      gap: 10,
+                    }}
+                  >
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: textSecondary,
+                          marginBottom: 4,
+                        }}
+                      >
+                        Role
+                      </label>
+                      <select
+                        value={agentRole}
+                        onChange={(e) => setAgentRole(e.target.value)}
+                        style={{
+                          width: '100%',
+                          padding: '9px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: inputBg,
+                          color: textPrimary,
+                          fontSize: 13,
+                        }}
+                      >
+                        <option value="l1_agent">L1 Agent</option>
+                        <option value="l2_agent">L2 Agent</option>
+                        <option value="l3_agent">L3 Agent</option>
+                        <option value="tenant_admin">Admin</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {agentRole !== 'tenant_admin' && products.length > 0 && (
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: textSecondary,
+                          marginBottom: 4,
+                        }}
+                      >
+                        Assigned products
+                      </label>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        {products.map((p) => (
+                          <label
+                            key={p.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 6,
+                              cursor: 'pointer',
+                              fontSize: 12,
+                              color: textSecondary,
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={agentProducts.includes(p.id)}
+                              onChange={() =>
+                                setAgentProducts((prev) =>
+                                  prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id]
+                                )
+                              }
+                            />
+                            {p.name}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: 8,
+                    marginTop: 4,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!agentsSaving) setShowPeopleModal(false);
+                    }}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 8,
+                      border: `1px solid ${borderSubtle}`,
+                      background: 'transparent',
+                      color: textSecondary,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={
+                      agentsSaving ||
+                      !(`${peopleFirstName} ${peopleLastName}`.trim()) ||
+                      !agentEmail.trim()
+                    }
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 8,
+                      border: 'none',
+                      background: accentBrand,
+                      color: '#0B1120',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor:
+                        agentsSaving ||
+                        !(`${peopleFirstName} ${peopleLastName}`.trim()) ||
+                        !agentEmail.trim()
+                          ? 'not-allowed'
+                          : 'pointer',
+                      opacity:
+                        agentsSaving ||
+                        !(`${peopleFirstName} ${peopleLastName}`.trim()) ||
+                        !agentEmail.trim()
+                          ? 0.7
+                          : 1,
+                    }}
+                  >
+                    {agentsSaving ? 'Adding…' : 'Add person'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showProductModal && (
+          <div
+            onClick={() => {
+              if (!productsSaving) setShowProductModal(false);
+            }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.55)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 20,
+              zIndex: 1000,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: 'min(480px, 96vw)',
+                background: bgSurface,
+                borderRadius: 16,
+                border: `1px solid ${borderSubtle}`,
+                padding: 18,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>Add product</div>
+                  <div style={{ fontSize: 12, color: textSecondary }}>
+                    Create a product or service for this tenant workspace.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!productsSaving) setShowProductModal(false);
+                  }}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: textSecondary,
+                    cursor: 'pointer',
+                    fontSize: 18,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+
+              {productsError && (
+                <div
+                  style={{
+                    padding: 10,
+                    background: 'rgba(239,68,68,0.08)',
+                    borderRadius: 10,
+                    color: '#ef4444',
+                    marginBottom: 12,
+                    fontSize: 12,
+                  }}
+                >
+                  {productsError}
+                </div>
+              )}
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!productName.trim()) return;
+                  setProductsError('');
+                  setProductsSaving(true);
+                  try {
+                    await onboardingApi.createProduct({
+                      name: productName.trim(),
+                      description: productDescription.trim() || undefined,
+                      website: productWebsite.trim() || undefined,
+                    });
+                    const refreshed = (await onboardingApi.getProducts()) as TenantProduct[];
+                    setProducts(refreshed);
+                    setProductName('');
+                    setProductDescription('');
+                    setProductWebsite('');
+                    setShowProductModal(false);
+                  } catch {
+                    setProductsError('Failed to add product');
+                  } finally {
+                    setProductsSaving(false);
+                  }
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10,
+                    marginBottom: 12,
+                  }}
+                >
+                  <div>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: textSecondary,
+                        marginBottom: 4,
+                      }}
+                    >
+                      Product name
+                    </label>
+                    <input
+                      value={productName}
+                      onChange={(e) => setProductName(e.target.value)}
+                      placeholder="e.g. Rewire AI"
+                      style={{
+                        width: '100%',
+                        padding: '9px 10px',
+                        borderRadius: 8,
+                        border: `1px solid ${borderSubtle}`,
+                        background: inputBg,
+                        color: textPrimary,
+                        fontSize: 13,
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      style={{
+                        display: 'block',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: textSecondary,
+                        marginBottom: 4,
+                      }}
+                    >
+                      Description (optional)
+                    </label>
+                    <input
+                      value={productDescription}
+                      onChange={(e) => setProductDescription(e.target.value)}
+                      placeholder="Short description"
+                      style={{
+                        width: '100%',
+                        padding: '9px 10px',
+                        borderRadius: 8,
+                        border: `1px solid ${borderSubtle}`,
+                        background: inputBg,
+                        color: textPrimary,
+                        fontSize: 13,
+                      }}
+                    />
+                  </div>
+                <div>
+                  <label
+                    style={{
+                      display: 'block',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: textSecondary,
+                      marginBottom: 4,
+                    }}
+                  >
+                    Website (optional)
+                  </label>
+                  <input
+                    value={productWebsite}
+                    onChange={(e) => setProductWebsite(e.target.value)}
+                    placeholder="https://example.edu/product"
+                    style={{
+                      width: '100%',
+                      padding: '9px 10px',
+                      borderRadius: 8,
+                      border: `1px solid ${borderSubtle}`,
+                      background: inputBg,
+                      color: textPrimary,
+                      fontSize: 13,
+                    }}
+                  />
+                </div>
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: 8,
+                    marginTop: 4,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!productsSaving) setShowProductModal(false);
+                    }}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 8,
+                      border: `1px solid ${borderSubtle}`,
+                      background: 'transparent',
+                      color: textSecondary,
+                      fontSize: 12,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={productsSaving || !productName.trim()}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: 8,
+                      border: 'none',
+                      background: accentBrand,
+                      color: '#0B1120',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: productsSaving || !productName.trim() ? 'not-allowed' : 'pointer',
+                      opacity: productsSaving || !productName.trim() ? 0.7 : 1,
+                    }}
+                  >
+                    {productsSaving ? 'Adding…' : 'Add product'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {showPlansModal && (
           <div
             onClick={() => setShowPlansModal(false)}
@@ -4197,6 +4502,7 @@ export default function TenantDashboardPage() {
             </div>
           </div>
         )}
+        </div>
       </main>
     </div>
   );
