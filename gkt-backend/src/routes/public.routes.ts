@@ -9,5 +9,6 @@ router.use(apiKeyAuth);
 router.post('/tickets', ticketController.createTicket);
 router.get('/tickets/:id', ticketController.getTicket);
 router.patch('/tickets/:id/status', ticketController.updateStatus);
+router.post('/support-suggest', ticketController.publicSupportSuggest);
 
 export default router;

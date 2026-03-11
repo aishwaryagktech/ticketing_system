@@ -283,11 +283,91 @@ export async function updateTicket(req: AuthRequest, res: Response): Promise<voi
       return;
     }
 
-    const updated = await prisma.ticket.update({ where: { id }, data: allowed });
+    const data: any = { ...allowed };
+
+    // If priority is changing, recompute SLA deadline based on new priority
+    if (typeof allowed.priority === 'string' && allowed.priority !== t.priority) {
+      try {
+        const resolutionMins = await getResolutionTimeMins(
+          t.product_id,
+          t.tenant_product_id,
+          String(allowed.priority)
+        );
+        if (resolutionMins != null && resolutionMins > 0) {
+          const createdAt = t.created_at ?? new Date();
+          data.sla_deadline = computeSlaDeadline(createdAt, resolutionMins);
+          // Reset breach flag when SLA is recalculated
+          data.sla_breached = false;
+        }
+      } catch (slaErr) {
+        console.warn('updateTicket: SLA recompute failed (continuing without SLA change):', (slaErr as Error).message);
+      }
+    }
+
+    const updated = await prisma.ticket.update({ where: { id }, data });
     res.json(updated);
   } catch (e) {
     console.error('updateTicket error:', e);
     res.status(500).json({ error: 'Failed to update ticket' });
+  }
+}
+
+// POST /api/public/support-suggest (via /api/v1 or /api/public prefix with API key)
+export async function publicSupportSuggest(req: ApiKeyRequest, res: Response): Promise<void> {
+  const productId = (req as ApiKeyRequest).productId;
+  if (!productId) {
+    res.status(403).json({ error: 'Product context required' });
+    return;
+  }
+
+  const { subject, description } = (req.body as any) || {};
+  if (!subject || !description) {
+    res.status(400).json({ error: 'subject and description are required' });
+    return;
+  }
+
+  const textForAi = `${subject}\n\n${description}`;
+
+  try {
+    const adapter = await getActiveAdapter(productId);
+    const [cls, snt, reply] = await Promise.all([
+      adapter.classify(textForAi),
+      adapter.detectSentiment(textForAi),
+      adapter.chat(
+        [
+          {
+            role: 'user',
+            content:
+              'You are a first-line support assistant. The user submitted the following issue from a web form.\n' +
+              'Explain a concise, step-by-step suggestion to fix or unblock them.\n' +
+              'Use simple language, and keep it under 250 words.\n\n' +
+              `Issue:\n${textForAi}`,
+          },
+        ],
+        ''
+      ),
+    ]);
+
+    const normalizedPriority = (function () {
+      const val = (cls.priority || '').toLowerCase();
+      if (val === 'p1' || val === 'p2' || val === 'p3' || val === 'p4') return val;
+      return 'p3';
+    })();
+
+    res.json({
+      suggestion: reply || 'We could not generate a specific fix suggestion. Please continue and create a ticket.',
+      priority: normalizedPriority,
+      meta: {
+        category: cls.category || null,
+        sub_category: cls.sub_category || null,
+        sentiment: (snt.sentiment || '').toLowerCase() || null,
+        trend: snt.trend || null,
+        confidence: typeof cls.confidence === 'number' ? cls.confidence : null,
+      },
+    });
+  } catch (e) {
+    console.error('publicSupportSuggest error:', e);
+    res.status(500).json({ error: 'Failed to generate AI suggestion' });
   }
 }
 

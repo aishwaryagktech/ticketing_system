@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db/postgres';
 import { Conversation } from '../../mongo/models/conversation.model';
 import { getIO } from '../config/socket';
+import { getActiveAdapter } from '../ai/provider';
+import { embedQuery, searchKb } from '../services/embedding.service';
 
 // GET /api/widget/tickets?tenant_id=&user_email=
 export async function listUserTickets(req: Request, res: Response): Promise<void> {
@@ -259,6 +261,136 @@ export async function createTicketMessage(req: Request, res: Response): Promise<
   } catch (e) {
     console.error('createTicketMessage error:', e);
     res.status(500).json({ error: 'Failed to send message' });
+  }
+}
+
+// POST /api/widget/support-suggest
+// Public endpoint for webform/widget to get an AI fix suggestion and priority without API key.
+export async function supportSuggest(req: Request, res: Response): Promise<void> {
+  const { tenant_id, tenant_product_id, product_id, user_email, subject, description } = (req.body as any) || {};
+
+  const tenantId = String(tenant_id || '').trim();
+  const tenantProductId = String(tenant_product_id || '').trim();
+  const productIdFromBody = String(product_id || '').trim();
+  const userEmail = String(user_email || '').trim();
+
+  if (!subject || !description) {
+    res.status(400).json({ error: 'subject and description are required' });
+    return;
+  }
+
+  // We require at least a product context (product_id or tenant_product_id) to pick the right AI config.
+  if (!productIdFromBody && !tenantProductId) {
+    res.status(400).json({ error: 'product_id or tenant_product_id is required' });
+    return;
+  }
+
+  let effectiveProductId: string | null = productIdFromBody || null;
+
+  try {
+    if (!effectiveProductId && tenantProductId) {
+      const tp = await prisma.tenantProduct.findUnique({
+        where: { id: tenantProductId },
+        select: { product_id: true },
+      });
+      effectiveProductId = tp?.product_id || null;
+    }
+
+    if (!effectiveProductId) {
+      res.status(400).json({ error: 'Unable to resolve product context for AI' });
+      return;
+    }
+
+    const textForAi =
+      `${subject}\n\n${description}` +
+      (tenantId || userEmail ? `\n\n[Context] tenant_id=${tenantId || 'n/a'}, user_email=${userEmail || 'n/a'}` : '');
+
+    const adapter = await getActiveAdapter(effectiveProductId);
+
+    // Run classification, sentiment, and RAG-backed suggestion in parallel.
+    const [cls, snt, reply] = await Promise.all([
+      adapter.classify(textForAi),
+      adapter.detectSentiment(textForAi),
+      (async () => {
+        try {
+          const q = await embedQuery(textForAi);
+          const hits = await searchKb(q, { limit: 5, tenant_product_id: tenantProductId || undefined });
+          const top = hits[0];
+          const ok = top && top.score >= 0.25;
+
+          let kbContext = '';
+          if (ok) {
+            const contexts = hits
+              .map((h) => ({
+                text: String((h.payload as any)?.text || ''),
+                score: Number(h.score || 0),
+              }))
+              .filter((c) => c.text.trim().length > 0);
+
+            kbContext = contexts
+              .slice(0, 4)
+              .map((c, i) => `KB CHUNK ${i + 1} (relevance ${c.score.toFixed(3)}):\n${c.text}`)
+              .join('\n\n');
+          }
+
+          const replyText = await adapter.chat(
+            [
+              {
+                role: 'user',
+                content:
+                  'You are a first-line support assistant. The user submitted the following issue from a web form.\n' +
+                  'Use the knowledge base context (when provided) plus the issue text to give a concise, step-by-step suggestion to fix or unblock them.\n' +
+                  'Use simple language, and keep it under 250 words.\n\n' +
+                  `Issue:\n${textForAi}`,
+              },
+            ],
+            kbContext
+          );
+
+          return replyText;
+        } catch (e) {
+          console.warn('supportSuggest: RAG lookup failed, falling back to plain suggestion:', (e as Error).message);
+          // Fallback: simple non-RAG suggestion using adapter.chat with empty KB context
+          return adapter.chat(
+            [
+              {
+                role: 'user',
+                content:
+                  'You are a first-line support assistant. The user submitted the following issue from a web form.\n' +
+                  'Explain a concise, step-by-step suggestion to fix or unblock them.\n' +
+                  'Use simple language, and keep it under 250 words.\n\n' +
+                  `Issue:\n${textForAi}`,
+              },
+            ],
+            ''
+          );
+        }
+      })(),
+    ]);
+
+    const normalizedPriority = (function () {
+      const val = (cls.priority || '').toLowerCase();
+      if (val === 'p1' || val === 'p2' || val === 'p3' || val === 'p4') return val;
+      return 'p3';
+    })();
+
+    res.json({
+      suggestion: reply || 'We could not generate a specific fix suggestion. Please continue and create a ticket.',
+      priority: normalizedPriority,
+      meta: {
+        category: cls.category || null,
+        sub_category: cls.sub_category || null,
+        sentiment: (snt.sentiment || '').toLowerCase() || null,
+        trend: snt.trend || null,
+        confidence: typeof cls.confidence === 'number' ? cls.confidence : null,
+        tenant_id: tenantId || null,
+        tenant_product_id: tenantProductId || null,
+        user_email: userEmail || null,
+      },
+    });
+  } catch (e) {
+    console.error('widget supportSuggest error:', e);
+    res.status(500).json({ error: 'Failed to generate AI suggestion' });
   }
 }
 

@@ -36,7 +36,18 @@ export async function getResolutionTimeMins(
     },
     select: { resolution_time_mins: true },
   });
-  return policy?.resolution_time_mins ?? null;
+  if (policy?.resolution_time_mins != null) {
+    return policy.resolution_time_mins;
+  }
+
+  // Fallback default SLA per priority tier (in minutes)
+  // P1: 1 hour, P2: 4 hours, P3: 12 hours, P4: 48 hours
+  if (priorityEnum === 'p1') return 60;
+  if (priorityEnum === 'p2') return 4 * 60;
+  if (priorityEnum === 'p3') return 12 * 60;
+  if (priorityEnum === 'p4') return 48 * 60;
+
+  return null;
 }
 
 /**

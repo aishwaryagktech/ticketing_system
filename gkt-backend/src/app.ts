@@ -59,6 +59,7 @@ app.use('/api/billing', billingRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/plugin', pluginRoutes);
 app.use('/api/v1', publicRoutes);
+app.use('/api/public', publicRoutes);
 app.use('/api/public-config', brandingPublicRoutes);
 app.use('/api/widget', widgetPublicRoutes);
 app.use('/api/webhooks', webhookRoutes);
