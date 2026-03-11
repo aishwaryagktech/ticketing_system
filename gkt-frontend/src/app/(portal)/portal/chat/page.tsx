@@ -4,11 +4,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { botApi } from '@/lib/api/bot.api';
+import { widgetApi } from '@/lib/api/widget.api';
 
 interface Message {
   id: string;
   from: 'user' | 'bot';
   text: string;
+  created_at?: string | Date;
 }
 
 export default function PortalChatPage() {
@@ -16,10 +18,20 @@ export default function PortalChatPage() {
   const primaryColor = search.get('primary_color') || '#FACC15';
   const logo = search.get('logo');
   const tenantId = search.get('tenant_id');
-  const productId = search.get('product_id') || 'portal';
+  const tenantProductId = search.get('tenant_product_id') || search.get('product_id') || undefined;
+  const userId = search.get('user_id') || undefined;
+  const userEmail = search.get('user_email') || undefined;
   const [mounted, setMounted] = useState(false);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [ended, setEnded] = useState(false);
+  const [view, setView] = useState<'bot' | 'tickets'>('bot');
+  const [ticketList, setTicketList] = useState<
+    Array<{ id: string; ticket_number: string; subject: string; status: string; updated_at: string }>
+  >([]);
+  const [ticketLoading, setTicketLoading] = useState(false);
+  const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
@@ -29,6 +41,8 @@ export default function PortalChatPage() {
   ]);
   const [error, setError] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const hasWindow = typeof window !== 'undefined';
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -39,11 +53,47 @@ export default function PortalChatPage() {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
   if (!mounted) return null;
 
   const handleSend = async () => {
+    // Ticket reply mode
+    if (view === 'tickets') {
+      const text = input.trim();
+      if (!text || sending || !activeTicketId || !tenantId || !userEmail) return;
+      setSending(true);
+      setInput('');
+      setError('');
+      try {
+        await widgetApi.sendTicketMessage(activeTicketId, tenantId, userEmail, text, tenantProductId);
+        const res = await widgetApi.getTicketMessages(activeTicketId, tenantId, userEmail, tenantProductId);
+        const msgs = (res.data?.messages as any[]) || [];
+        setMessages(
+          msgs.map((m: any) => ({
+            id: String(m.id),
+            from: m.from === 'agent' ? 'bot' : m.from,
+            text: String(m.text || ''),
+            created_at: m.created_at,
+          })),
+        );
+      } catch (e: any) {
+        setError(e?.message || 'Failed to send message');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || sending || ended) return;
+    if (!tenantId) {
+      setError('Missing tenant_id');
+      return;
+    }
     setInput('');
     setError('');
 
@@ -53,8 +103,17 @@ export default function PortalChatPage() {
     setSending(true);
 
     try {
-      const res = await botApi.chat(text, productId, tenantId || undefined);
+      const res = await botApi.chat({
+        message: text,
+        tenant_id: tenantId,
+        tenant_product_id: tenantProductId,
+        session_id: sessionId ?? undefined,
+        user_id: userId,
+        user_email: userEmail,
+      });
       const replyText = (res.data?.reply as string) || 'Bot did not return a reply.';
+      if (typeof res.data?.session_id === 'string') setSessionId(res.data.session_id);
+      if (res.data?.ended === true) setEnded(true);
       const botMsg: Message = {
         id: `${id}-bot`,
         from: 'bot',
@@ -63,6 +122,116 @@ export default function PortalChatPage() {
       setMessages((prev) => [...prev, botMsg]);
     } catch (e: any) {
       setError(e?.message || 'Failed to send message');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const lastBot = [...messages].reverse().find((m) => m.from === 'bot');
+  const showActions = !ended && !!sessionId && !!lastBot?.text?.toLowerCase().includes('did this solve it?');
+
+  const handleClose = () => {
+    if (!hasWindow) return;
+    window.parent?.postMessage({ type: 'gkt-widget-close' }, '*');
+  };
+
+  const handleNewChat = () => {
+    setView('bot');
+    setActiveTicketId(null);
+    if (pollRef.current) clearInterval(pollRef.current);
+    setSessionId(null);
+    setEnded(false);
+    setMessages([
+      {
+        id: 'welcome',
+        from: 'bot',
+        text: 'Hi! I’m your ReWire support bot. Ask me anything about your account, tickets, or product.',
+      },
+    ]);
+    setError('');
+    if (hasWindow) {
+      window.parent?.postMessage({ type: 'gkt-widget-new-session' }, '*');
+    }
+  };
+
+  const loadTickets = async () => {
+    if (!tenantId || !userEmail) return;
+    setTicketLoading(true);
+    try {
+      const res = await widgetApi.listMyTickets(tenantId, userEmail, tenantProductId);
+      const items = (res.data?.items as any[]) || [];
+      setTicketList(
+        items.map((t: any) => ({
+          id: String(t.id),
+          ticket_number: String(t.ticket_number),
+          subject: String(t.subject || ''),
+          status: String(t.status || ''),
+          updated_at: String(t.updated_at || ''),
+        })),
+      );
+    } catch {
+      setTicketList([]);
+    } finally {
+      setTicketLoading(false);
+    }
+  };
+
+  const loadTicketMessages = async (ticketId: string) => {
+    if (!tenantId || !userEmail) return;
+    try {
+      const res = await widgetApi.getTicketMessages(ticketId, tenantId, userEmail, tenantProductId);
+      const msgs = (res.data?.messages as any[]) || [];
+      setMessages(
+        msgs.map((m: any) => ({
+          id: String(m.id),
+          from: m.from === 'agent' ? 'bot' : m.from,
+          text: String(m.text || ''),
+          created_at: m.created_at,
+        })),
+      );
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load ticket messages');
+    }
+  };
+
+  const startTicketPolling = (ticketId: string) => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => {
+      loadTicketMessages(ticketId);
+    }, 5000);
+  };
+
+  const handleYes = () => {
+    setInput('yes');
+    setTimeout(() => handleSend(), 0);
+  };
+
+  const handleRaiseTicket = async () => {
+    if (!sessionId) return;
+    setError('');
+    setSending(true);
+    try {
+      const res = await botApi.handoff(sessionId);
+      const ticketNumber = res.data?.handoff?.ticket_number as string | undefined;
+      const ticketId = res.data?.handoff?.ticket_id as string | undefined;
+      const msg = ticketNumber ? `Ticket created: ${ticketNumber}` : 'Ticket created. A support agent will follow up.';
+      setMessages((prev) => [
+        ...prev,
+        { id: `${Date.now()}-bot-handoff`, from: 'bot', text: msg },
+      ]);
+      // End the bot session so it stops replying,
+      // but immediately switch to the ticket conversation view
+      // so the user can continue chatting with a human.
+      setEnded(true);
+      if (ticketId && tenantId && userEmail) {
+        setView('tickets');
+        setActiveTicketId(ticketId);
+        await loadTickets();
+        await loadTicketMessages(ticketId);
+        startTicketPolling(ticketId);
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Failed to create ticket');
     } finally {
       setSending(false);
     }
@@ -78,20 +247,21 @@ export default function PortalChatPage() {
   return (
     <div
       style={{
-        minHeight: '100vh',
+        height: '100%',
+        minHeight: 0,
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        alignItems: 'stretch',
+        justifyContent: 'stretch',
         background: '#020617',
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
-        padding: 16,
+        padding: 0,
       }}
     >
       <div
         style={{
           width: '100%',
           maxWidth: 420,
-          height: 560,
+          height: '100%',
           borderRadius: 20,
           border: '1px solid rgba(148,163,184,0.5)',
           background: 'radial-gradient(circle at top, #1d283a 0, #020617 60%)',
@@ -112,76 +282,254 @@ export default function PortalChatPage() {
             background: 'rgba(15,23,42,0.9)',
           }}
         >
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 999,
-              background: primaryColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 16,
-            }}
-          >
-            {logo ? (
-              <img
-                src={logo}
-                alt="Tenant logo"
-                style={{ width: '100%', height: '100%', borderRadius: '999px', objectFit: 'cover' }}
-              />
-            ) : (
-              '🤖'
-            )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
+            <div
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 999,
+                background: primaryColor,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+              }}
+            >
+              {logo ? (
+                <img
+                  src={logo}
+                  alt="Tenant logo"
+                  style={{ width: '100%', height: '100%', borderRadius: '999px', objectFit: 'cover' }}
+                />
+              ) : (
+                '🤖'
+              )}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#E5E7EB' }}>ReWire Support Bot</span>
+              <span style={{ fontSize: 11, color: '#9CA3AF' }}>Typically replies in under a minute</span>
+            </div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#E5E7EB' }}>ReWire Support Bot</span>
-            <span style={{ fontSize: 11, color: '#9CA3AF' }}>Typically replies in under a minute</span>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              type="button"
+              onClick={() => {
+                if (view === 'bot') return;
+                setView('bot');
+                setError('');
+                setActiveTicketId(null);
+                if (pollRef.current) clearInterval(pollRef.current);
+              }}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 999,
+                border: '1px solid rgba(148,163,184,0.5)',
+                background: view === 'bot' ? primaryColor : 'transparent',
+                color: view === 'bot' ? '#111827' : '#E5E7EB',
+                fontSize: 10,
+                cursor: 'pointer',
+              }}
+            >
+              Chatbot
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (view === 'tickets') return;
+                setView('tickets');
+                setError('');
+                loadTickets();
+                if (pollRef.current) clearInterval(pollRef.current);
+              }}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 999,
+                border: '1px solid rgba(148,163,184,0.5)',
+                background: view === 'tickets' ? primaryColor : 'transparent',
+                color: view === 'tickets' ? '#111827' : '#E5E7EB',
+                fontSize: 10,
+                cursor: 'pointer',
+              }}
+            >
+              My tickets
+            </button>
+            <button
+              type="button"
+              onClick={handleNewChat}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 999,
+                border: '1px solid rgba(148,163,184,0.5)',
+                background: 'transparent',
+                color: '#E5E7EB',
+                fontSize: 10,
+                cursor: 'pointer',
+              }}
+            >
+              New chat
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              aria-label="Close"
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: 999,
+                border: '1px solid rgba(148,163,184,0.6)',
+                background: 'transparent',
+                color: '#9CA3AF',
+                fontSize: 12,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              ×
+            </button>
           </div>
         </div>
 
-        {/* Messages */}
-        <div
-          ref={scrollRef}
-          style={{
-            flex: 1,
-            padding: '10px 10px',
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-          }}
-        >
-          {messages.map((m) => (
+        {/* Body: bot chat vs tickets view */}
+        {view === 'tickets' ? (
+          <div style={{ display: 'flex', flex: 1, borderTop: '1px solid rgba(30,64,175,0.4)' }}>
             <div
-              key={m.id}
               style={{
-                display: 'flex',
-                justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
+                width: 150,
+                borderRight: '1px solid rgba(30,64,175,0.4)',
+                padding: '8px 6px',
+                fontSize: 11,
               }}
             >
+              <div style={{ marginBottom: 6, color: '#9CA3AF', fontWeight: 600 }}>My tickets</div>
+              {ticketLoading ? (
+                <div style={{ color: '#9CA3AF' }}>Loading…</div>
+              ) : ticketList.length === 0 ? (
+                <div style={{ color: '#9CA3AF' }}>No tickets yet.</div>
+              ) : (
+                ticketList.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveTicketId(t.id);
+                      loadTicketMessages(t.id);
+                      startTicketPolling(t.id);
+                    }}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '6px 6px',
+                      marginBottom: 4,
+                      borderRadius: 8,
+                      border: 'none',
+                      background: activeTicketId === t.id ? 'rgba(30,64,175,0.8)' : 'transparent',
+                      color: '#E5E7EB',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 11 }}>{t.ticket_number}</div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: '#9CA3AF',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {t.subject}
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+            <div
+              ref={scrollRef}
+              style={{
+                flex: 1,
+                padding: '10px 10px',
+                overflowY: 'auto',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
+                  }}
+                >
+                  <div
+                    style={{
+                      maxWidth: '80%',
+                      padding: '8px 10px',
+                      borderRadius: 14,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap',
+                      background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
+                      color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                    }}
+                  >
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {error && (
+                <div style={{ fontSize: 11, color: '#FCA5A5', marginTop: 4 }}>
+                  {error}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div
+            ref={scrollRef}
+            style={{
+              flex: 1,
+              padding: '10px 10px',
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            {messages.map((m) => (
               <div
+                key={m.id}
                 style={{
-                  maxWidth: '80%',
-                  padding: '8px 10px',
-                  borderRadius: 14,
-                  fontSize: 12,
-                  lineHeight: 1.5,
-                  whiteSpace: 'pre-wrap',
-              background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
-                  color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                  display: 'flex',
+                  justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
                 }}
               >
-                {m.text}
+                <div
+                  style={{
+                    maxWidth: '80%',
+                    padding: '8px 10px',
+                    borderRadius: 14,
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap',
+                    background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
+                    color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                  }}
+                >
+                  {m.text}
+                </div>
               </div>
-            </div>
-          ))}
-          {error && (
-            <div style={{ fontSize: 11, color: '#FCA5A5', marginTop: 4 }}>
-              {error}
-            </div>
-          )}
-        </div>
+            ))}
+            {error && (
+              <div style={{ fontSize: 11, color: '#FCA5A5', marginTop: 4 }}>
+                {error}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Input */}
         <div
@@ -190,44 +538,98 @@ export default function PortalChatPage() {
             borderTop: '1px solid rgba(148,163,184,0.4)',
             background: 'rgba(15,23,42,0.96)',
             display: 'flex',
-            gap: 6,
+            flexDirection: 'column',
+            gap: 8,
           }}
         >
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask a question..."
-            style={{
-              flex: 1,
-              padding: '8px 10px',
-              borderRadius: 999,
-              border: '1px solid rgba(148,163,184,0.5)',
-              background: '#020617',
-              color: '#E5E7EB',
-              fontSize: 12,
-              outline: 'none',
-            }}
-          />
-          <button
-            type="button"
-            disabled={sending}
-            onClick={handleSend}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 999,
-              border: 'none',
-              background: primaryColor,
-              color: '#111827',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: sending ? 'not-allowed' : 'pointer',
-              opacity: sending ? 0.8 : 1,
-            }}
-          >
-            Send
-          </button>
+          {showActions && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={handleYes}
+                disabled={sending}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 999,
+                  border: '1px solid rgba(148,163,184,0.5)',
+                  background: 'rgba(15,23,42,0.9)',
+                  color: '#E5E7EB',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: sending ? 'not-allowed' : 'pointer',
+                  opacity: sending ? 0.8 : 1,
+                }}
+              >
+                Yes, solved
+              </button>
+              <button
+                type="button"
+                onClick={handleRaiseTicket}
+                disabled={sending}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 999,
+                  border: 'none',
+                  background: primaryColor,
+                  color: '#111827',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: sending ? 'not-allowed' : 'pointer',
+                  opacity: sending ? 0.8 : 1,
+                }}
+              >
+                Raise ticket
+              </button>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                view === 'tickets'
+                  ? activeTicketId
+                    ? 'Reply to this ticket...'
+                    : 'Select a ticket to reply...'
+                  : ended
+                    ? 'Conversation ended'
+                    : 'Ask a question...'
+              }
+              disabled={view === 'tickets' ? !activeTicketId : ended}
+              style={{
+                flex: 1,
+                padding: '8px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(148,163,184,0.5)',
+                background: '#020617',
+                color: '#E5E7EB',
+                fontSize: 12,
+                outline: 'none',
+                opacity: ended ? 0.6 : 1,
+              }}
+            />
+            <button
+              type="button"
+              disabled={sending || (view === 'bot' && ended) || (view === 'tickets' && !activeTicketId)}
+              onClick={handleSend}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 999,
+                border: 'none',
+                background: primaryColor,
+                color: '#111827',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: sending || ended ? 'not-allowed' : 'pointer',
+                opacity: sending || ended ? 0.8 : 1,
+              }}
+            >
+              Send
+            </button>
+          </div>
         </div>
       </div>
     </div>

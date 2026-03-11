@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "ts-node prisma/seed.ts"
+    "prisma:seed": "ts-node prisma/seed.ts",
+    "seed:agent-dashboard": "ts-node prisma/seed_agent_dashboard.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.20.0",

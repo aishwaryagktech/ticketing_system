@@ -6,6 +6,11 @@ import { rbac } from '../middleware/rbac';
 const router = Router();
 
 router.use(auth);
+
+// Agent self endpoints (available to agents + admins)
+router.get('/me/products', agentController.myProducts);
+
+// Admin-only endpoints
 router.use(rbac('tenant_admin', 'super_admin'));
 
 router.get('/', agentController.listAgents);

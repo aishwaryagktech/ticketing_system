@@ -8,6 +8,8 @@ router.use(auth);
 
 router.get('/', ticketController.listTickets);
 router.get('/:id', ticketController.getTicket);
+router.get('/:id/conversation', ticketController.getTicketConversation);
+router.get('/:id/ai-suggestions', ticketController.suggestReplies);
 router.post('/', ticketController.createTicket);
 router.patch('/:id', ticketController.updateTicket);
 router.patch('/:id/assign', ticketController.assignTicket);

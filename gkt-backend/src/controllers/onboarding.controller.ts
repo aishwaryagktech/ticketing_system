@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { prisma } from '../db/postgres';
 import { AuthRequest } from '../middleware/auth';
 import { encryptPII, decryptPII, hashSearchable } from '../utils/encrypt';
+import { indexKbDocument, deleteKbDocumentFromQdrant } from '../services/embedding.service';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import pdfParse from 'pdf-parse';
@@ -96,6 +97,121 @@ export async function updateStep(req: AuthRequest, res: Response): Promise<void>
   } catch (e) {
     console.error('updateStep error:', e);
     res.status(500).json({ error: 'Failed to update step' });
+  }
+}
+
+export async function getConfigurationStatus(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  const productId = req.user?.product_id;
+  if (!tenantId || !productId) {
+    res.status(403).json({ error: 'Tenant and product context required' });
+    return;
+  }
+  try {
+    const [tenant, tenantProducts, ticketSettings, channelSettings] = await Promise.all([
+      prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { id: true, logo_base64: true },
+      }),
+      prisma.tenantProduct.findMany({
+        where: { tenant_id: tenantId },
+        orderBy: { created_at: 'asc' },
+        select: { id: true, name: true, status: true, l0_model: true, l0_provider: true },
+      }),
+      prisma.tenantTicketSettings.findUnique({ where: { tenant_id: tenantId }, select: { id: true } }),
+      prisma.tenantChannelSettings.findUnique({ where: { tenant_id: tenantId }, select: { id: true } }),
+    ]);
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { primary_color: true },
+    });
+
+    const tenant_level = {
+      ticket_settings: !!ticketSettings,
+      channels: !!channelSettings,
+      branding: !!(tenant?.logo_base64 || (tenant as any)?.custom_domain),
+    };
+
+    const productIds = (tenantProducts ?? []).map((tp) => tp.id);
+    const [agentCounts, kbArticleCounts, kbSourceCounts, slaCounts, escalationCounts] = await Promise.all([
+      productIds.length > 0
+        ? prisma.productAgent.groupBy({
+            by: ['tenant_product_id'],
+            where: { tenant_product_id: { in: productIds } },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+      productIds.length > 0
+        ? prisma.kbArticle.groupBy({
+            by: ['tenant_product_id'],
+            where: {
+              tenant_product_id: { in: productIds },
+              is_published: true,
+            },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+      productIds.length > 0
+        ? prisma.kbSource.groupBy({
+            by: ['tenant_product_id'],
+            where: { tenant_product_id: { in: productIds } },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+      productIds.length > 0
+        ? prisma.slaPolicy.groupBy({
+            by: ['tenant_product_id'],
+            where: { tenant_product_id: { in: productIds } },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+      productIds.length > 0
+        ? prisma.escalationRule.groupBy({
+            by: ['tenant_product_id'],
+            where: { tenant_product_id: { in: productIds } },
+            _count: { id: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const agentCountByTp = new Map<string, number>();
+    agentCounts.forEach((g) => agentCountByTp.set(g.tenant_product_id, g._count.id));
+    const kbArticleByTp = new Map<string, number>();
+    kbArticleCounts.forEach((g) => kbArticleByTp.set(g.tenant_product_id, (kbArticleByTp.get(g.tenant_product_id) ?? 0) + g._count.id));
+    const kbSourceByTp = new Map<string, number>();
+    kbSourceCounts.forEach((g) => kbSourceByTp.set(g.tenant_product_id, (kbSourceByTp.get(g.tenant_product_id) ?? 0) + g._count.id));
+    const slaCountByTp = new Map<string, number>();
+    slaCounts.forEach((g) => slaCountByTp.set(g.tenant_product_id, g._count.id));
+    const escalationCountByTp = new Map<string, number>();
+    escalationCounts.forEach((g) => escalationCountByTp.set(g.tenant_product_id, g._count.id));
+
+    const products = (tenantProducts ?? []).map((tp) => {
+      const agents = (agentCountByTp.get(tp.id) ?? 0) > 0;
+      const kb = (kbArticleByTp.get(tp.id) ?? 0) > 0 || (kbSourceByTp.get(tp.id) ?? 0) > 0;
+      const l0_bot = !!(tp.l0_model && tp.l0_provider);
+      const sla = (slaCountByTp.get(tp.id) ?? 0) > 0;
+      const escalation = (escalationCountByTp.get(tp.id) ?? 0) > 0;
+      const complete = [agents, kb, l0_bot, sla, escalation].filter(Boolean).length;
+      const incomplete = 5 - complete;
+      return {
+        id: tp.id,
+        name: tp.name,
+        status: tp.status,
+        configuration: { agents, kb, l0_bot, sla, escalation },
+        incomplete_count: incomplete,
+        complete_count: complete,
+      };
+    });
+
+    res.json({
+      tenant_id: tenantId,
+      product_id: productId,
+      tenant_level,
+      products,
+    });
+  } catch (e) {
+    console.error('getConfigurationStatus error:', e);
+    res.status(500).json({ error: 'Failed to load configuration status' });
   }
 }
 
@@ -279,8 +395,11 @@ export async function inviteAgent(req: AuthRequest, res: Response): Promise<void
         role_id: roleRecord.id,
       },
     });
-    const assignments = Array.isArray(assigned_products) ? assigned_products : [];
-    // Derive support level strictly from role, not from request body
+    const rawAssignments = Array.isArray(assigned_products) ? assigned_products : [];
+    const tenantProductIds = new Set(
+      (await prisma.tenantProduct.findMany({ where: { tenant_id: tenantId }, select: { id: true } })).map((tp) => tp.id)
+    );
+    const assignments = rawAssignments.filter((id) => typeof id === 'string' && tenantProductIds.has(id));
     const level =
       desiredRoleName === 'l2_agent' ? 'L2' : desiredRoleName === 'l3_agent' ? 'L3' : 'L1';
     for (const tpId of assignments) {
@@ -292,6 +411,83 @@ export async function inviteAgent(req: AuthRequest, res: Response): Promise<void
   } catch (e) {
     console.error('inviteAgent error:', e);
     res.status(500).json({ error: 'Failed to invite agent' });
+  }
+}
+
+export async function setAgentPassword(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  const actorRole = req.user?.role;
+  const { id } = req.params; // user id
+  const { new_password } = (req.body as any) || {};
+
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  if (actorRole !== 'tenant_admin' && actorRole !== 'super_admin') {
+    res.status(403).json({ error: 'Insufficient permissions' });
+    return;
+  }
+  if (!id) {
+    res.status(400).json({ error: 'id required' });
+    return;
+  }
+  if (typeof new_password !== 'string' || new_password.trim().length < 8) {
+    res.status(400).json({ error: 'new_password must be at least 8 characters' });
+    return;
+  }
+
+  try {
+    const target = await prisma.user.findFirst({
+      where: {
+        id,
+        tenant_id: tenantId,
+        roleRef: { name: { in: ['l1_agent', 'l2_agent', 'l3_agent'] } },
+      },
+      include: { roleRef: true },
+    });
+    if (!target) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(new_password.trim(), 10);
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { password_hash: passwordHash },
+    });
+
+    res.json({ message: 'Password updated' });
+  } catch (e) {
+    console.error('setAgentPassword error:', e);
+    res.status(500).json({ error: 'Failed to update password' });
+  }
+}
+
+export async function getTicketSettings(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  try {
+    const settings = await prisma.tenantTicketSettings.findUnique({
+      where: { tenant_id: tenantId },
+    });
+    if (!settings) {
+      res.json(null);
+      return;
+    }
+    res.json({
+      ticket_prefix: settings.ticket_prefix,
+      default_priority: settings.default_priority,
+      categories: settings.categories,
+      attachment_limit_mb: settings.attachment_limit_mb,
+      assignment_rule: settings.assignment_rule,
+    });
+  } catch (e) {
+    console.error('getTicketSettings error:', e);
+    res.status(500).json({ error: 'Failed to load ticket settings' });
   }
 }
 
@@ -328,13 +524,15 @@ export async function upsertTicketSettings(req: AuthRequest, res: Response): Pro
 }
 
 export async function upsertSlaPolicies(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
   const productId = req.user?.product_id;
-  if (!productId) {
-    res.status(403).json({ error: 'Product required' });
+  if (!tenantId || !productId) {
+    res.status(403).json({ error: 'Tenant and product required' });
     return;
   }
 
-  const { policies } = req.body as {
+  const { tenant_product_id, policies } = req.body as {
+    tenant_product_id?: string;
     policies?: Array<{
       priority: 'p1' | 'p2' | 'p3' | 'p4' | string;
       response_time_mins: number;
@@ -343,12 +541,25 @@ export async function upsertSlaPolicies(req: AuthRequest, res: Response): Promis
     }>;
   };
 
+  if (!tenant_product_id || typeof tenant_product_id !== 'string') {
+    res.status(400).json({ error: 'tenant_product_id is required' });
+    return;
+  }
   if (!Array.isArray(policies) || policies.length === 0) {
     res.status(400).json({ error: 'policies array required' });
     return;
   }
 
   try {
+    const tp = await prisma.tenantProduct.findFirst({
+      where: { id: tenant_product_id, tenant_id: tenantId },
+      select: { id: true, tenant_id: true },
+    });
+    if (!tp) {
+      res.status(404).json({ error: 'Product not found' });
+      return;
+    }
+
     const allowed = new Set(['p1', 'p2', 'p3', 'p4']);
     const results = [];
 
@@ -364,21 +575,24 @@ export async function upsertSlaPolicies(req: AuthRequest, res: Response): Promis
       if (!Number.isFinite(response_time_mins) || !Number.isFinite(resolution_time_mins)) continue;
       if (response_time_mins <= 0 || resolution_time_mins <= 0) continue;
 
-      const saved = await prisma.slaPolicy.upsert({
-        where: { product_id_priority: { product_id: productId, priority: priority as any } },
-        create: {
-          product_id: productId,
-          priority: priority as any,
-          response_time_mins,
-          resolution_time_mins,
-          ...(warning_threshold_pct != null ? { warning_threshold_pct } : {}),
-        },
-        update: {
-          response_time_mins,
-          resolution_time_mins,
-          ...(warning_threshold_pct != null ? { warning_threshold_pct } : {}),
-        },
+      const existing = await prisma.slaPolicy.findFirst({
+        where: { tenant_product_id: tenant_product_id, priority: priority as any },
       });
+      const payload = {
+        response_time_mins,
+        resolution_time_mins,
+        ...(warning_threshold_pct != null ? { warning_threshold_pct } : {}),
+      };
+      const saved = existing
+        ? await prisma.slaPolicy.update({ where: { id: existing.id }, data: payload })
+        : await prisma.slaPolicy.create({
+            data: {
+              product_id: productId,
+              tenant_product_id: tenant_product_id,
+              priority: priority as any,
+              ...payload,
+            },
+          });
       results.push(saved);
     }
 
@@ -390,14 +604,27 @@ export async function upsertSlaPolicies(req: AuthRequest, res: Response): Promis
 }
 
 export async function listSlaPolicies(req: AuthRequest, res: Response): Promise<void> {
-  const productId = req.user?.product_id;
-  if (!productId) {
-    res.status(403).json({ error: 'Product required' });
+  const tenantId = req.user?.tenant_id;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  const tenant_product_id = req.query?.tenant_product_id as string | undefined;
+  if (!tenant_product_id) {
+    res.json([]);
     return;
   }
   try {
+    const tp = await prisma.tenantProduct.findFirst({
+      where: { id: tenant_product_id, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!tp) {
+      res.json([]);
+      return;
+    }
     const rows = await prisma.slaPolicy.findMany({
-      where: { product_id: productId },
+      where: { tenant_product_id: tenant_product_id },
       orderBy: { priority: 'asc' },
     });
     res.json(rows);
@@ -408,14 +635,36 @@ export async function listSlaPolicies(req: AuthRequest, res: Response): Promise<
 }
 
 export async function listEscalationRules(req: AuthRequest, res: Response): Promise<void> {
-  const productId = req.user?.product_id;
+  const tenantId = req.user?.tenant_id;
+  const tenant_product_id = req.query?.tenant_product_id as string | undefined;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  if (!tenant_product_id) {
+    res.status(400).json({ error: 'tenant_product_id is required' });
+    return;
+  }
+  const tp = await prisma.tenantProduct.findUnique({
+    where: { id: tenant_product_id, tenant_id: tenantId },
+    select: { id: true, tenant_id: true },
+  });
+  if (!tp) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { product_id: true },
+  });
+  const productId = tenant?.product_id;
   if (!productId) {
-    res.status(403).json({ error: 'Product required' });
+    res.status(403).json({ error: 'Tenant product not found' });
     return;
   }
   try {
     const rows = await prisma.escalationRule.findMany({
-      where: { product_id: productId },
+      where: { tenant_product_id },
       orderBy: [{ level: 'asc' }, { created_at: 'asc' }],
     });
     res.json(rows);
@@ -426,13 +675,8 @@ export async function listEscalationRules(req: AuthRequest, res: Response): Prom
 }
 
 export async function upsertEscalationRules(req: AuthRequest, res: Response): Promise<void> {
-  const productId = req.user?.product_id;
-  if (!productId) {
-    res.status(403).json({ error: 'Product required' });
-    return;
-  }
-
-  const { rules } = req.body as {
+  const tenantId = req.user?.tenant_id;
+  const { rules, tenant_product_id } = req.body as {
     rules?: Array<{
       id?: string;
       level: number;
@@ -444,7 +688,34 @@ export async function upsertEscalationRules(req: AuthRequest, res: Response): Pr
       notify_sms?: boolean;
       is_active?: boolean;
     }>;
+    tenant_product_id?: string;
   };
+
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  if (!tenant_product_id) {
+    res.status(400).json({ error: 'tenant_product_id is required' });
+    return;
+  }
+  const tp = await prisma.tenantProduct.findUnique({
+    where: { id: tenant_product_id, tenant_id: tenantId },
+    select: { id: true },
+  });
+  if (!tp) {
+    res.status(404).json({ error: 'Product not found' });
+    return;
+  }
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { product_id: true },
+  });
+  const productId = tenant?.product_id;
+  if (!productId) {
+    res.status(403).json({ error: 'Tenant product not found' });
+    return;
+  }
 
   if (!Array.isArray(rules) || rules.length === 0) {
     res.status(400).json({ error: 'rules array required' });
@@ -463,6 +734,7 @@ export async function upsertEscalationRules(req: AuthRequest, res: Response): Pr
 
       const data: any = {
         product_id: productId,
+        tenant_product_id,
         level,
         trigger_type: trigger_type as any,
         trigger_threshold_mins:
@@ -477,11 +749,16 @@ export async function upsertEscalationRules(req: AuthRequest, res: Response): Pr
       };
 
       if (r.id) {
-        const updated = await prisma.escalationRule.update({
-          where: { id: r.id },
-          data,
+        const existing = await prisma.escalationRule.findFirst({
+          where: { id: r.id, tenant_product_id },
         });
-        saved.push(updated);
+        if (existing) {
+          const updated = await prisma.escalationRule.update({
+            where: { id: r.id },
+            data,
+          });
+          saved.push(updated);
+        }
       } else {
         const created = await prisma.escalationRule.create({ data });
         saved.push(created);
@@ -917,25 +1194,45 @@ export async function crawlKbSource(req: AuthRequest, res: Response): Promise<vo
 }
 
 export async function listKbSources(req: AuthRequest, res: Response): Promise<void> {
-  let productId = req.user?.product_id;
   const tenantId = req.user?.tenant_id;
+  const raw = req.query?.tenant_product_id;
+  const tenant_product_id = typeof raw === 'string' ? raw.trim() : Array.isArray(raw) ? String(raw[0] || '').trim() : '';
+
   if (!tenantId) {
     res.status(403).json({ error: 'Tenant required' });
     return;
   }
-  if (!productId) {
-    const t = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { product_id: true } });
-    if (!t) {
-      res.status(403).json({ error: 'Tenant not found' });
-      return;
-    }
-    productId = t.product_id;
+  if (!tenant_product_id) {
+    res.status(400).json({ error: 'tenant_product_id is required' });
+    return;
   }
+
+  const tp = await prisma.tenantProduct.findUnique({
+    where: { id: tenant_product_id, tenant_id: tenantId },
+    select: { id: true },
+  });
+  if (!tp) {
+    res.status(404).json({ error: 'Product not found for your tenant. Check that the product is assigned to your tenant.' });
+    return;
+  }
+
   try {
+    // Match: (1) sources for this tenant product, or (2) unscoped sources for this tenant (tenant_product_id null + tenant_id match)
+    // Don't require tenant_id when tenant_product_id matches (handles legacy rows with tenant_id null)
     const sources = await prisma.kbSource.findMany({
       where: {
-        product_id: productId,
-        tenant_id: tenantId ?? null,
+        OR: [
+          { tenant_product_id },
+          { tenant_product_id: null, tenant_id: tenantId },
+        ],
+        AND: [
+          {
+            OR: [
+              { source_type: 'upload' },
+              { url: { startsWith: 'upload:' } },
+            ],
+          },
+        ],
       },
       orderBy: { updated_at: 'desc' },
       take: 100,
@@ -977,7 +1274,6 @@ export async function getKbSource(req: AuthRequest, res: Response): Promise<void
 }
 
 export async function convertKbSourceToArticle(req: AuthRequest, res: Response): Promise<void> {
-  let productId = req.user?.product_id;
   const tenantId = req.user?.tenant_id;
   const userId = req.user?.id;
   const { id } = req.params;
@@ -985,47 +1281,51 @@ export async function convertKbSourceToArticle(req: AuthRequest, res: Response):
     res.status(403).json({ error: 'Tenant required' });
     return;
   }
-  if (!productId) {
-    const t = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { product_id: true } });
-    if (!t) {
-      res.status(403).json({ error: 'Tenant not found' });
-      return;
-    }
-    productId = t.product_id;
-  }
   const { title, body, category, audience, tags, is_published } = req.body as any;
-  const tenant_product_id = req.body?.tenant_product_id as string | undefined;
-  if (!title || !body || !category || !audience) {
-    res.status(400).json({ error: 'title, body, category, audience are required' });
+  const body_tenant_product_id = req.body?.tenant_product_id as string | undefined;
+  if (!title || typeof body !== 'string') {
+    res.status(400).json({ error: 'title and body are required' });
     return;
   }
+  const cat = String(category ?? 'General').slice(0, 80);
+  const aud = String(audience ?? 'general').slice(0, 80);
   try {
     const src = await prisma.kbSource.findUnique({ where: { id } });
-    if (!src || src.product_id !== productId || (src.tenant_id || null) !== (tenantId ?? null)) {
-      res.status(404).json({ error: 'Not found' });
+    if (!src) {
+      res.status(404).json({ error: 'Source not found' });
       return;
     }
+    if ((src.tenant_id || null) !== (tenantId ?? null)) {
+      res.status(404).json({ error: 'Source not found' });
+      return;
+    }
+    let tenant_product_id = body_tenant_product_id ?? src.tenant_product_id ?? null;
+    if (!tenant_product_id) {
+      const tp = await prisma.tenantProduct.findFirst({
+        where: { tenant_id: tenantId },
+        select: { id: true },
+      });
+      if (tp) tenant_product_id = tp.id;
+    }
+    const tagsArr = Array.isArray(tags) ? tags : [];
     const normalized = {
-      product_id: productId,
-      tenant_product_id: tenant_product_id ?? null,
+      product_id: src.product_id,
+      tenant_product_id,
       title: String(title).slice(0, 200),
       body: String(body),
-      category: String(category).slice(0, 80),
-      audience: String(audience).slice(0, 80),
-      tags: Array.isArray(tags) ? tags : [],
-      is_published: is_published === true, // default draft unless explicitly published
+      category: cat,
+      audience: aud,
+      tags: tagsArr,
+      is_published: is_published === true,
       created_by: userId,
     };
 
-    // Basic dedupe: avoid creating identical article twice
+    // Dedupe: same product + tenant_product + title (one article per title per product)
     const existing = await prisma.kbArticle.findFirst({
       where: {
         product_id: normalized.product_id,
         tenant_product_id: normalized.tenant_product_id,
         title: normalized.title,
-        category: normalized.category,
-        audience: normalized.audience,
-        body: normalized.body,
       },
       orderBy: { updated_at: 'desc' },
     });
@@ -1034,11 +1334,26 @@ export async function convertKbSourceToArticle(req: AuthRequest, res: Response):
       return;
     }
 
-    const article = await prisma.kbArticle.create({ data: normalized });
+    const article = await prisma.kbArticle.create({
+      data: {
+        product_id: normalized.product_id,
+        tenant_product_id: normalized.tenant_product_id,
+        title: normalized.title,
+        body: normalized.body,
+        category: normalized.category,
+        audience: normalized.audience,
+        tags: normalized.tags as object,
+        is_published: normalized.is_published,
+        created_by: normalized.created_by,
+      },
+    });
     res.status(201).json(article);
-  } catch (e) {
+  } catch (e: any) {
     console.error('convertKbSourceToArticle error:', e);
-    res.status(500).json({ error: 'Failed to create article' });
+    res.status(500).json({
+      error: 'Failed to create article',
+      message: e?.message || String(e),
+    });
   }
 }
 
@@ -1065,6 +1380,7 @@ export async function deleteKbSource(req: AuthRequest, res: Response): Promise<v
       return;
     }
     await prisma.kbSource.delete({ where: { id } });
+    deleteKbDocumentFromQdrant(id).catch((e) => console.error('RAG delete on source remove:', e));
     res.json({ message: 'deleted' });
   } catch (e) {
     console.error('deleteKbSource error:', e);
@@ -1126,6 +1442,16 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
     res.status(400).json({ error: 'file is required' });
     return;
   }
+  if (tenant_product_id) {
+    const tp = await prisma.tenantProduct.findUnique({
+      where: { id: tenant_product_id, tenant_id: tenantId },
+      select: { id: true },
+    });
+    if (!tp) {
+      res.status(400).json({ error: 'Invalid product' });
+      return;
+    }
+  }
 
   try {
     let text = '';
@@ -1155,12 +1481,21 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
         where: { id: existing.id },
         data: {
           source_type: 'upload',
+          tenant_product_id: tenant_product_id ?? null,
           title: file.originalname,
           url: `upload:${file.originalname}`,
           status: 'extracted',
           error: null,
         },
       });
+      indexKbDocument({
+        kb_source_id: touched.id,
+        tenant_id: touched.tenant_id,
+        product_id: touched.product_id,
+        tenant_product_id: touched.tenant_product_id ?? null,
+        title: touched.title ?? file.originalname,
+        content_text: text,
+      }).catch((e) => console.error('RAG index after upload update:', e));
       res.json(touched);
       return;
     }
@@ -1170,6 +1505,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
         product_id: productId,
         tenant_id: tenantId ?? null,
         tenant_product_id: tenant_product_id ?? null,
+        source_type: 'upload',
         url: `upload:${file.originalname}`,
         title: file.originalname,
         content_text: text,
@@ -1178,6 +1514,15 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
         created_by: userId,
       },
     });
+
+    indexKbDocument({
+      kb_source_id: source.id,
+      tenant_id: source.tenant_id,
+      product_id: source.product_id,
+      tenant_product_id: source.tenant_product_id ?? null,
+      title: source.title ?? file.originalname,
+      content_text: text,
+    }).catch((e) => console.error('RAG index after upload:', e));
 
     res.status(201).json(source);
   } catch (e) {

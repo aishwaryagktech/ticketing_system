@@ -25,23 +25,27 @@ const BotSessionSchema = new Schema({
   resolved_by_bot:  { type: Boolean },
   turns_count:      { type: Number },
   handoff_reason:   { type: String },
+  handoff_ticket_id:{ type: String },
   model_used:       { type: String },
   kb_articles_used: { type: [String], default: [] },
   ended_at:         { type: Date },
 }, { _id: false });
 
 const ConversationSchema = new Schema({
-  product_id:  { type: String, required: true, index: true },
-  tenant_id:   { type: String, default: null },
-  ticket_id:   { type: String, required: true },
-  type:        { type: String, enum: ['ticket', 'bot'] },
+  // For bot conversations, we use tenant_product_id as the scoping key.
+  tenant_product_id: { type: String, required: true, index: true },
+  tenant_id:         { type: String, default: null },
+  session_id:        { type: String, default: null, index: true },
+  ticket_id:         { type: String, default: null, index: true },
+  type:              { type: String, enum: ['ticket', 'bot'] },
   messages:    { type: [MessageSchema], default: [] },
   bot_session: { type: BotSessionSchema, default: null },
   created_at:  { type: Date, default: Date.now },
   updated_at:  { type: Date, default: Date.now },
 });
 
-ConversationSchema.index({ product_id: 1, ticket_id: 1 });
-ConversationSchema.index({ product_id: 1, type: 1, created_at: -1 });
+ConversationSchema.index({ tenant_product_id: 1, session_id: 1 });
+ConversationSchema.index({ tenant_product_id: 1, ticket_id: 1 });
+ConversationSchema.index({ tenant_product_id: 1, type: 1, created_at: -1 });
 
 export const Conversation = mongoose.model('Conversation', ConversationSchema);

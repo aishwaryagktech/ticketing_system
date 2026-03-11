@@ -87,8 +87,8 @@ export default function LoginPage() {
         router.push('/super-admin/products');
       } else if (data.user.role === 'tenant_admin') {
         router.push('/admin/dashboard');
-      } else if (data.user.role === 'l1_agent' || data.user.role === 'l2_agent') {
-        router.push('/agent/queue');
+      } else if (data.user.role === 'l1_agent' || data.user.role === 'l2_agent' || data.user.role === 'l3_agent') {
+        router.push('/agent/dashboard');
       } else {
         router.push('/portal/dashboard');
       }

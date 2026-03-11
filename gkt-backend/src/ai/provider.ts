@@ -1,9 +1,12 @@
 import { AIAdapter } from '../types/ai.types';
 import { prisma } from '../db/postgres';
 import { decryptPII } from '../utils/encrypt';
+import { OpenAIAdapter } from './adapters/openai';
+import { env } from '../config/env';
 
 /**
  * Reads the active AI provider from the DB and routes to the correct adapter.
+ * Falls back to OPENAI_API_KEY from env if no DB config is present.
  */
 export async function getActiveAdapter(productId: string): Promise<AIAdapter> {
   // 1. Try to find product-specific provider
@@ -18,19 +21,24 @@ export async function getActiveAdapter(productId: string): Promise<AIAdapter> {
     });
   }
 
-  if (!config) {
-    throw new Error('No active AI provider configured for this product or platform.');
+  // 3. If we found a DB config, route based on provider_name
+  if (config) {
+    const apiKey = decryptPII(config.api_key_encrypted);
+    const models = (config.available_models as string[]) || [];
+    const defaultModel = config.default_model || models[0] || 'gpt-4o-mini';
+
+    if (config.provider_name === 'openai') {
+      return new OpenAIAdapter(apiKey, defaultModel);
+    }
+
+    throw new Error(`AI Adapter for provider ${config.provider_name} is not yet implemented.`);
   }
 
-  const apiKey = decryptPII(config.api_key_encrypted);
-  const models = config.available_models as string[];
-  const defaultModel = config.default_model || models[0];
+  // 4. Fallback: use OPENAI_API_KEY from env if no DB config
+  if (!env.OPENAI_API_KEY) {
+    throw new Error('No active AI provider configured and OPENAI_API_KEY not set.');
+  }
 
-  // For now, since we haven't implemented the actual adapter files (openai.ts, anthropic.ts, etc.), 
-  // we'll just throw a not implemented error, but the key decryption architecture is in place.
-  // In a real app, we'd do:
-  // if (config.provider_name === 'openai') return new OpenAIAdapter(apiKey, defaultModel);
-  // ...
-
-  throw new Error(`AI Adapter for ${config.provider_name} is not yet implemented.`);
+  return new OpenAIAdapter(env.OPENAI_API_KEY, 'gpt-4o-mini');
 }
+

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { env } from '../config/env';
 
-const ALGORITHM = 'aes-256-gcm';
+const ALGORITHM = 'aes-256-gcm';  
 
 /**
  * Encrypts PII (like API Keys, sensitive fields) using AES-256-GCM.

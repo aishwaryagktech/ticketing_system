@@ -8,9 +8,11 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 export default function PublicSupportFormPage() {
   const search = useSearchParams();
   const tenantId = search.get('tenant_id') || null;
-  const productId = search.get('product_id') || null;
+  const tenantProductId = search.get('tenant_product_id') || null;
+  // Back-compat: older embeds pass `product_id`
+  const productId = tenantProductId || search.get('product_id') || null;
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState('aishh2305@gmail.com');
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -34,6 +36,7 @@ export default function PublicSupportFormPage() {
           description,
           source: 'web_form',
           tenant_id: tenantId,
+          tenant_product_id: tenantProductId,
           product_id: productId,
         }),
       });

@@ -8,6 +8,7 @@ export interface Ticket {
   id: string;
   ticket_number: string;
   product_id: string;
+  tenant_product_id?: string | null;
   tenant_id?: string | null;
   subject: string;
   description: string;

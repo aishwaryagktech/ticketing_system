@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ticketApi } from '@/lib/api/ticket.api';
 import { agentApi } from '@/lib/api/agent.api';
@@ -20,7 +20,7 @@ type TicketListItem = {
   updated_at: string;
 };
 
-export default function AgentQueuePage() {
+export default function AgentDashboardPage() {
   const { user } = useAuthStore();
   const [tab, setTab] = useState<'assigned' | 'unassigned' | 'breached'>('assigned');
   const [tenantProductId, setTenantProductId] = useState<string>('');
@@ -28,6 +28,12 @@ export default function AgentQueuePage() {
   const [items, setItems] = useState<TicketListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [stats, setStats] = useState<{ assigned: number; unassigned: number; breached: number }>({
+    assigned: 0,
+    unassigned: 0,
+    breached: 0,
+  });
+  const [statsLoading, setStatsLoading] = useState(false);
 
   useEffect(() => {
     agentApi
@@ -64,12 +70,35 @@ export default function AgentQueuePage() {
     }
   };
 
+  const fetchStats = async () => {
+    if (!tenantProductId) return;
+    setStatsLoading(true);
+    try {
+      const [assignedRes, unassignedRes, breachedRes] = await Promise.all([
+        ticketApi.list({ take: 1_000, tenant_product_id: tenantProductId, assigned: 'me' }),
+        ticketApi.list({ take: 1_000, tenant_product_id: tenantProductId, assigned: 'unassigned' }),
+        ticketApi.list({ take: 1_000, tenant_product_id: tenantProductId, sla_breached: 'true' }),
+      ]);
+      setStats({
+        assigned: (assignedRes.data?.items || []).length,
+        unassigned: (unassignedRes.data?.items || []).length,
+        breached: (breachedRes.data?.items || []).length,
+      });
+    } catch {
+      setStats({ assigned: 0, unassigned: 0, breached: 0 });
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchTickets();
+    fetchStats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, tenantProductId]);
 
-  const title = user?.role === 'l2_agent' ? 'L2 Inbox' : user?.role === 'l3_agent' ? 'L3 Inbox' : 'L1 Inbox';
+  const role = (user?.role || '').toLowerCase();
+  const title = role.startsWith('l3') ? 'L3 Inbox' : role.startsWith('l2') ? 'L2 Inbox' : role.startsWith('l1') ? 'L1 Inbox' : 'Agent Inbox';
 
   return (
     <div
@@ -81,15 +110,18 @@ export default function AgentQueuePage() {
         padding: 18,
       }}
     >
-      <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, gap: 12 }}>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>{title}</div>
-            <div style={{ fontSize: 12, color: '#94A3B8' }}>Assigned, unassigned, and SLA tickets.</div>
+            <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
+            <div style={{ fontSize: 12, color: '#94A3B8' }}>Agent dashboard: queues, SLA and product filters.</div>
           </div>
           <button
             type="button"
-            onClick={fetchTickets}
+            onClick={() => {
+              fetchTickets();
+              fetchStats();
+            }}
             style={{
               padding: '8px 12px',
               borderRadius: 10,
@@ -102,6 +134,45 @@ export default function AgentQueuePage() {
           >
             Refresh
           </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 16 }}>
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              border: '1px solid rgba(148,163,184,0.35)',
+              background: 'rgba(15,23,42,0.85)',
+              fontSize: 12,
+            }}
+          >
+            <div style={{ color: '#94A3B8', marginBottom: 4 }}>Assigned to me</div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{statsLoading ? '…' : stats.assigned}</div>
+          </div>
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              border: '1px solid rgba(148,163,184,0.35)',
+              background: 'rgba(15,23,42,0.85)',
+              fontSize: 12,
+            }}
+          >
+            <div style={{ color: '#94A3B8', marginBottom: 4 }}>Unassigned (my level)</div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{statsLoading ? '…' : stats.unassigned}</div>
+          </div>
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 14,
+              border: '1px solid rgba(148,163,184,0.35)',
+              background: 'rgba(30,64,175,0.8)',
+              fontSize: 12,
+            }}
+          >
+            <div style={{ color: '#E5E7EB', marginBottom: 4 }}>SLA breached</div>
+            <div style={{ fontSize: 22, fontWeight: 900 }}>{statsLoading ? '…' : stats.breached}</div>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -143,7 +214,7 @@ export default function AgentQueuePage() {
                 background: 'rgba(15,23,42,0.75)',
                 color: '#E5E7EB',
                 fontSize: 12,
-                width: 320,
+                width: 260,
               }}
             >
               {products.length === 0 ? (

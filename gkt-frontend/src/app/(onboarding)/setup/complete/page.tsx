@@ -18,7 +18,7 @@ export default function SetupCompletePage() {
 
   const handleGoDashboard = () => {
     if (user?.role === 'tenant_admin') router.push('/admin/dashboard');
-    else if (user?.role === 'l1_agent' || user?.role === 'l2_agent') router.push('/agent/queue');
+    else if (user?.role === 'l1_agent' || user?.role === 'l2_agent' || user?.role === 'l3_agent') router.push('/agent/dashboard');
     else router.push('/portal/dashboard');
   };
 

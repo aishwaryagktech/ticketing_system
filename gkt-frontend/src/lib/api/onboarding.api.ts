@@ -49,10 +49,33 @@ async function fetchWithAuthRetry(url: string, init?: RequestInit): Promise<Resp
   });
 }
 
+export interface ConfigurationStatus {
+  tenant_id: string;
+  product_id: string;
+  tenant_level: {
+    ticket_settings: boolean;
+    channels: boolean;
+    branding: boolean;
+  };
+  products: Array<{
+    id: string;
+    name: string;
+    status: string;
+    configuration: { agents: boolean; kb: boolean; l0_bot: boolean; sla?: boolean; escalation?: boolean };
+    incomplete_count: number;
+    complete_count: number;
+  }>;
+}
+
 export const onboardingApi = {
   getState: () =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding`).then((r) => {
       if (!r.ok) throw new Error('Failed to load onboarding');
+      return r.json();
+    }),
+  getConfigurationStatus: (): Promise<ConfigurationStatus> =>
+    fetchWithAuthRetry(`${API_BASE}/api/onboarding/configuration-status`).then((r) => {
+      if (!r.ok) throw new Error('Failed to load configuration status');
       return r.json();
     }),
   setPlan: (plan_id: string) =>
@@ -99,9 +122,25 @@ export const onboardingApi = {
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/agents`, {
       method: 'POST',
       body: JSON.stringify(data),
-    }).then((r) => {
-      if (!r.ok) throw new Error('Failed to invite agent');
-      return r.json();
+    }).then(async (r) => {
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((body as any)?.error || 'Failed to invite agent');
+      return body;
+    }),
+  setAgentPassword: (id: string, new_password: string) =>
+    fetchWithAuthRetry(`${API_BASE}/api/onboarding/agents/${encodeURIComponent(id)}/password`, {
+      method: 'PATCH',
+      body: JSON.stringify({ new_password }),
+    }).then(async (r) => {
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((body as any)?.error || 'Failed to update password');
+      return body;
+    }),
+  getTicketSettings: () =>
+    fetchWithAuthRetry(`${API_BASE}/api/onboarding/ticket-settings`).then(async (r) => {
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((data as any)?.error || 'Failed to load ticket settings');
+      return data;
     }),
   putTicketSettings: (data: {
     ticket_prefix?: string;
@@ -117,10 +156,10 @@ export const onboardingApi = {
       if (!r.ok) throw new Error('Failed to save ticket settings');
       return r.json();
     }),
-  putSla: (policies: Array<{ priority: 'p1' | 'p2' | 'p3' | 'p4'; response_time_mins: number; resolution_time_mins: number; warning_threshold_pct?: number }>) =>
+  putSla: (tenant_product_id: string, policies: Array<{ priority: 'p1' | 'p2' | 'p3' | 'p4'; response_time_mins: number; resolution_time_mins: number; warning_threshold_pct?: number }>) =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/sla`, {
       method: 'PUT',
-      body: JSON.stringify({ policies }),
+      body: JSON.stringify({ tenant_product_id, policies }),
     }).then((r) => {
       return r.json().catch(() => ({})).then((data) => {
         if (!r.ok) {
@@ -130,8 +169,8 @@ export const onboardingApi = {
         return data;
       });
     }),
-  getSla: () =>
-    fetchWithAuthRetry(`${API_BASE}/api/onboarding/sla`).then((r) => {
+  getSla: (tenant_product_id?: string) =>
+    fetchWithAuthRetry(`${API_BASE}/api/onboarding/sla${tenant_product_id ? `?tenant_product_id=${encodeURIComponent(tenant_product_id)}` : ''}`).then((r) => {
       return r.json().catch(() => ([])).then((data) => {
         if (!r.ok) {
           const msg = (data && (data.error || data.message)) ? String(data.error || data.message) : 'Failed to load SLA';
@@ -140,8 +179,10 @@ export const onboardingApi = {
         return data;
       });
     }),
-  getEscalation: () =>
-    fetchWithAuthRetry(`${API_BASE}/api/onboarding/escalation`).then((r) => {
+  getEscalation: (tenant_product_id?: string) =>
+    fetchWithAuthRetry(
+      `${API_BASE}/api/onboarding/escalation${tenant_product_id ? `?tenant_product_id=${encodeURIComponent(tenant_product_id)}` : ''}`
+    ).then((r) => {
       return r.json().catch(() => ([])).then((data) => {
         if (!r.ok) {
           const msg = (data && (data.error || data.message)) ? String(data.error || data.message) : 'Failed to load escalation rules';
@@ -182,10 +223,10 @@ export const onboardingApi = {
           return resp;
         })
     ),
-  putEscalation: (rules: any[]) =>
+  putEscalation: (tenant_product_id: string, rules: any[]) =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/escalation`, {
       method: 'PUT',
-      body: JSON.stringify({ rules }),
+      body: JSON.stringify({ tenant_product_id, rules }),
     }).then((r) => {
       return r.json().catch(() => ({})).then((data) => {
         if (!r.ok) {
@@ -257,15 +298,23 @@ export const onboardingApi = {
       })
     ),
   kbUpload: async (file: File, tenant_product_id?: string) => {
-    const token = localStorage.getItem('gkt_token');
-    const form = new FormData();
-    form.append('file', file);
-    if (tenant_product_id) form.append('tenant_product_id', tenant_product_id);
-    const res = await fetch(`${API_BASE}/api/onboarding/kb/upload`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      body: form,
-    });
+    const buildForm = () => {
+      const form = new FormData();
+      form.append('file', file);
+      if (tenant_product_id) form.append('tenant_product_id', tenant_product_id);
+      return form;
+    };
+    const doUpload = (token: string | null) =>
+      fetch(`${API_BASE}/api/onboarding/kb/upload`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: buildForm(),
+      });
+    let res = await doUpload(getToken());
+    if (res.status === 401) {
+      const newToken = await refreshAccessToken();
+      res = await doUpload(newToken);
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(String((data as any)?.error || 'Failed to upload'));
     return data;

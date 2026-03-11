@@ -16,9 +16,12 @@ export default function SetupAgentsPage() {
   const [role, setRole] = useState('l1_agent');
   const [supportLevel, setSupportLevel] = useState('L1');
   const [assignedProducts, setAssignedProducts] = useState<string[]>([]);
+  const [resetUserId, setResetUserId] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
 
   useEffect(() => {
     setMounted(true);
@@ -39,6 +42,7 @@ export default function SetupAgentsPage() {
     e.preventDefault();
     if (!name.trim() || !email.trim()) return;
     setError('');
+    setInfo('');
     setSaving(true);
     try {
       await onboardingApi.inviteAgent({
@@ -55,6 +59,24 @@ export default function SetupAgentsPage() {
       setAssignedProducts([]);
     } catch {
       setError('Failed to invite agent');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetUserId.trim() || resetPassword.trim().length < 8) return;
+    setError('');
+    setInfo('');
+    setSaving(true);
+    try {
+      await onboardingApi.setAgentPassword(resetUserId.trim(), resetPassword.trim());
+      setInfo('Password updated. Agent can log in now.');
+      setResetUserId('');
+      setResetPassword('');
+    } catch (e2: any) {
+      setError(e2?.message || 'Failed to update password');
     } finally {
       setSaving(false);
     }
@@ -93,6 +115,7 @@ export default function SetupAgentsPage() {
       </p>
 
       {error && <div style={{ padding: 12, background: 'rgba(239,68,68,0.1)', borderRadius: 10, color: '#ef4444', marginBottom: 20 }}>{error}</div>}
+      {info && <div style={{ padding: 12, background: 'rgba(34,197,94,0.12)', borderRadius: 10, color: '#4ADE80', marginBottom: 20 }}>{info}</div>}
 
       <form onSubmit={handleInvite} style={{ marginBottom: 28 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
@@ -141,6 +164,26 @@ export default function SetupAgentsPage() {
           Invite Agent
         </button>
       </form>
+
+      <div style={{ marginBottom: 28, padding: 14, borderRadius: 12, border: `1px solid ${borderColor}`, background: isDark ? 'rgba(15,23,42,0.65)' : '#fff' }}>
+        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Set / Reset agent password</div>
+        <div style={{ fontSize: 12, color: textSecondary, marginBottom: 12 }}>
+          Use this to set a password so the agent can log in. (Minimum 8 characters)
+        </div>
+        <form onSubmit={handleSetPassword} style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr auto', gap: 10, alignItems: 'end' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: textSecondary, marginBottom: 6 }}>Agent user id</label>
+            <input value={resetUserId} onChange={(e) => setResetUserId(e.target.value)} placeholder="UUID from agents list" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: `1px solid ${borderColor}`, background: inputBg, color: textPrimary, fontSize: 14 }} />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: textSecondary, marginBottom: 6 }}>New password</label>
+            <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} placeholder="At least 8 chars" style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: `1px solid ${borderColor}`, background: inputBg, color: textPrimary, fontSize: 14 }} />
+          </div>
+          <button type="submit" disabled={saving} style={{ padding: '10px 16px', borderRadius: 10, background: accentBrand, color: '#000', border: 'none', fontWeight: 800, cursor: saving ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}>
+            Update password
+          </button>
+        </form>
+      </div>
 
       {loading ? <p style={{ color: textSecondary }}>Loading...</p> : agents.length > 0 ? (
         <div style={{ marginBottom: 28 }}>

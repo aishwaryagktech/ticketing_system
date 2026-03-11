@@ -11,6 +11,8 @@ export default function SetupEscalationPage() {
   const router = useRouter();
   const { theme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const [products, setProducts] = useState<Array<{ id: string; name: string }>>([]);
+  const [tenantProductId, setTenantProductId] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [rules, setRules] = useState<Array<{
@@ -31,7 +33,18 @@ export default function SetupEscalationPage() {
 
   useEffect(() => {
     if (!mounted) return;
-    onboardingApi.getEscalation()
+    onboardingApi.getProducts()
+      .then((list) => {
+        const p = Array.isArray(list) ? list : [];
+        setProducts(p);
+        if (!tenantProductId && p[0]?.id) setTenantProductId(p[0].id);
+      })
+      .catch(() => setProducts([]));
+  }, [mounted]);
+
+  useEffect(() => {
+    if (!mounted || !tenantProductId) return;
+    onboardingApi.getEscalation(tenantProductId)
       .then((data: any[]) => {
         if (!Array.isArray(data) || data.length === 0) return;
         setRules(
@@ -45,14 +58,18 @@ export default function SetupEscalationPage() {
           }))
         );
       })
-      .catch(() => { /* ignore */ });
-  }, [mounted]);
+      .catch(() => { /* keep defaults */ });
+  }, [mounted, tenantProductId]);
 
   const handleContinue = async () => {
+    if (!tenantProductId) {
+      setError('Select a product first.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      await onboardingApi.putEscalation(rules);
+      await onboardingApi.putEscalation(tenantProductId, rules);
       await onboardingApi.setStep('kb');
       router.push('/setup/knowledge-base');
     } catch (e: any) {
@@ -76,8 +93,23 @@ export default function SetupEscalationPage() {
       <div style={{ marginBottom: 8, fontSize: 13, color: accentBrand, fontWeight: 600 }}>Step 5</div>
       <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8 }}>Escalation Rules</h1>
       <p style={{ fontSize: 15, color: textSecondary, marginBottom: 28 }}>
-        Configure when tickets automatically escalate to higher support levels (L1 → L2 → L3).
+        Configure when tickets automatically escalate to higher support levels (L1 → L2 → L3). Configure per product.
       </p>
+
+      {products.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: textSecondary }}>Product</label>
+          <select
+            value={tenantProductId}
+            onChange={(e) => setTenantProductId(e.target.value)}
+            style={{ padding: '10px 12px', borderRadius: 8, border: `1px solid ${borderColor}`, background: inputBg, color: textPrimary, fontWeight: 600, minWidth: 200 }}
+          >
+            {products.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {error && (
         <div style={{ padding: 12, background: 'rgba(239,68,68,0.1)', borderRadius: 10, color: '#ef4444', marginBottom: 20 }}>
@@ -172,7 +204,7 @@ export default function SetupEscalationPage() {
         + Add rule
       </button>
 
-      <button onClick={handleContinue} disabled={saving} style={{ padding: '12px 24px', borderRadius: 10, background: accentBrand, color: '#000', border: 'none', fontWeight: 700, cursor: 'pointer' }}>
+      <button onClick={handleContinue} disabled={saving || (products.length > 0 && !tenantProductId)} style={{ padding: '12px 24px', borderRadius: 10, background: accentBrand, color: '#000', border: 'none', fontWeight: 700, cursor: 'pointer', opacity: (products.length > 0 && !tenantProductId) ? 0.7 : 1 }}>
         {saving ? 'Saving...' : 'Save & Continue to Knowledge Base'}
       </button>
     </div>

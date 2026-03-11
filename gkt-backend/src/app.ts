@@ -22,6 +22,7 @@ import brandingPublicRoutes from './routes/branding-public.routes';
 import pluginRoutes from './routes/plugin.routes';
 import publicRoutes from './routes/public.routes';
 import webhookRoutes from './routes/webhook.routes';
+import widgetPublicRoutes from './routes/widget-public.routes';
 
 const app = express();
 
@@ -59,6 +60,7 @@ app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/plugin', pluginRoutes);
 app.use('/api/v1', publicRoutes);
 app.use('/api/public-config', brandingPublicRoutes);
+app.use('/api/widget', widgetPublicRoutes);
 app.use('/api/webhooks', webhookRoutes);
 
 // Health check

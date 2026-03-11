@@ -153,8 +153,10 @@ model TenantProduct {
   created_at  DateTime @default(now())
   created_by  String?
 
-  tenant        Tenant         @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  product_agents ProductAgent[]
+  tenant          Tenant          @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  product_agents  ProductAgent[]
+  sla_policies    SlaPolicy[]
+  escalation_rules EscalationRule[]
 
   @@map("tenant_products")
 }
@@ -223,6 +225,7 @@ model Ticket {
   ticket_number        String       @unique
   product_id           String
   tenant_id            String?
+  tenant_product_id    String?
   created_by           String
   assigned_to          String?
   parent_ticket_id     String?
@@ -264,6 +267,8 @@ model Ticket {
   @@index([product_id, assigned_to, status])
   @@index([product_id, sla_deadline])
   @@index([product_id, sla_breached, escalation_level])
+  @@index([tenant_product_id, status, created_at])
+  @@index([tenant_product_id, assigned_to, status])
   @@map("tickets")
 }
 
@@ -289,6 +294,7 @@ model TicketComment {
 model SlaPolicy {
   id                    String   @id @default(uuid())
   product_id            String
+  tenant_product_id     String?
   priority              Priority
   response_time_mins    Int
   resolution_time_mins  Int
@@ -296,15 +302,17 @@ model SlaPolicy {
   created_at            DateTime @default(now())
   updated_at            DateTime @updatedAt
 
-  product Product @relation(fields: [product_id], references: [id])
+  product       Product       @relation(fields: [product_id], references: [id])
+  tenant_product TenantProduct? @relation(fields: [tenant_product_id], references: [id], onDelete: Cascade)
 
-  @@unique([product_id, priority])
+  @@unique([tenant_product_id, priority])
   @@map("sla_policies")
 }
 
 model EscalationRule {
   id                     String            @id @default(uuid())
   product_id             String
+  tenant_product_id      String?
   level                  Int
   trigger_type           EscalationTrigger
   trigger_threshold_mins Int?
@@ -315,7 +323,8 @@ model EscalationRule {
   is_active              Boolean           @default(true)
   created_at             DateTime          @default(now())
 
-  product Product @relation(fields: [product_id], references: [id])
+  product        Product        @relation(fields: [product_id], references: [id])
+  tenant_product TenantProduct? @relation(fields: [tenant_product_id], references: [id], onDelete: Cascade)
 
   @@map("escalation_rules")
 }

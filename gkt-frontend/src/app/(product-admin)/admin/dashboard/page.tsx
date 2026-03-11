@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/store/auth.store';
-import { onboardingApi } from '@/lib/api/onboarding.api';
+import { onboardingApi, type ConfigurationStatus } from '@/lib/api/onboarding.api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
@@ -12,6 +12,7 @@ type ConfigSection =
   | 'overview'
   | 'products'
   | 'people'
+  | 'configuration-hub'
   | 'agents'
   | 'ticket-settings'
   | 'sla'
@@ -23,6 +24,7 @@ type ConfigSection =
 
 type TenantProduct = {
   id: string;
+  tenant_id?: string;
   name: string;
   description?: string | null;
   status: string;
@@ -45,12 +47,34 @@ interface TicketSettingsInlineProps {
 
 function TicketSettingsInline(props: TicketSettingsInlineProps) {
   const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext } = props;
+  const [mounted, setMounted] = useState(false);
   const [prefix, setPrefix] = useState('TKT');
   const [defaultPriority, setDefaultPriority] = useState('p2');
   const [categories, setCategories] = useState('Billing, Technical, Account, Bug');
   const [assignmentRule, setAssignmentRule] = useState('round_robin');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+    onboardingApi
+      .getTicketSettings()
+      .then((data: any) => {
+        if (!data) return;
+        if (typeof data.ticket_prefix === 'string') setPrefix(data.ticket_prefix);
+        if (typeof data.default_priority === 'string') setDefaultPriority(data.default_priority);
+        if (Array.isArray(data.categories)) setCategories(data.categories.join(', '));
+        else if (typeof data.categories === 'string') setCategories(data.categories);
+        if (typeof data.assignment_rule === 'string') setAssignmentRule(data.assignment_rule);
+      })
+      .catch(() => { /* keep defaults */ });
+  }, [mounted]);
+
+  if (!mounted) return null;
 
   return (
     <>
@@ -209,8 +233,8 @@ function TicketSettingsInline(props: TicketSettingsInlineProps) {
             });
             await onboardingApi.setStep('sla');
             onNext();
-          } catch {
-            setError('Failed to save');
+          } catch (e: any) {
+            setError(e?.message || 'Failed to save ticket settings');
           } finally {
             setSaving(false);
           }
@@ -241,13 +265,16 @@ interface SlaInlineProps {
   inputBg: string;
   accentBrand: string;
   onNext: () => void;
+  products: Array<{ id: string; name: string }>;
+  initialTenantProductId?: string;
 }
 
 function SlaInline(props: SlaInlineProps) {
-  const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext } = props;
+  const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext, products, initialTenantProductId } = props;
   const [mounted, setMounted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [tenantProductId, setTenantProductId] = useState<string>(initialTenantProductId || '');
   const [rows, setRows] = useState<
     Array<{ priority: 'p1' | 'p2' | 'p3' | 'p4'; response: number; resolution: number }>
   >([
@@ -262,9 +289,17 @@ function SlaInline(props: SlaInlineProps) {
   }, []);
 
   useEffect(() => {
-    if (!mounted) return;
+    if (initialTenantProductId && products.some((p) => p.id === initialTenantProductId)) {
+      setTenantProductId(initialTenantProductId);
+    } else if (!tenantProductId && products[0]?.id) {
+      setTenantProductId(products[0].id);
+    }
+  }, [initialTenantProductId, products]);
+
+  useEffect(() => {
+    if (!mounted || !tenantProductId) return;
     onboardingApi
-      .getSla()
+      .getSla(tenantProductId)
       .then((data: any[]) => {
         if (!Array.isArray(data) || data.length === 0) return;
         const map = new Map<string, { response: number; resolution: number }>();
@@ -287,9 +322,11 @@ function SlaInline(props: SlaInlineProps) {
       .catch(() => {
         // keep defaults
       });
-  }, [mounted]);
+  }, [mounted, tenantProductId]);
 
   if (!mounted) return null;
+
+  const safeProducts = products || [];
 
   return (
     <>
@@ -305,6 +342,29 @@ function SlaInline(props: SlaInlineProps) {
           }}
         >
           {error}
+        </div>
+      )}
+
+      {safeProducts.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 6 }}>Product</label>
+          <select
+            value={tenantProductId}
+            onChange={(e) => setTenantProductId(e.target.value)}
+            style={{
+              minWidth: 220,
+              padding: '8px 10px',
+              borderRadius: 8,
+              border: `1px solid ${borderSubtle}`,
+              background: inputBg,
+              color: textPrimary,
+              fontSize: 13,
+            }}
+          >
+            {safeProducts.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -390,12 +450,17 @@ function SlaInline(props: SlaInlineProps) {
 
       <button
         type="button"
-        disabled={saving}
+        disabled={saving || (safeProducts.length > 0 && !tenantProductId)}
         onClick={async () => {
+          if (!tenantProductId && safeProducts.length > 0) {
+            setError('Select a product first');
+            return;
+          }
           setSaving(true);
           setError('');
           try {
             await onboardingApi.putSla(
+              tenantProductId,
               rows.map((r) => ({
                 priority: r.priority,
                 response_time_mins: Number(r.response),
@@ -444,11 +509,14 @@ interface EscalationInlineProps {
   inputBg: string;
   accentBrand: string;
   onNext: () => void;
+  products?: Array<{ id: string; name: string }>;
+  initialTenantProductId?: string;
 }
 
 function EscalationInline(props: EscalationInlineProps) {
-  const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext } = props;
+  const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext, products = [], initialTenantProductId } = props;
   const [mounted, setMounted] = useState(false);
+  const [tenantProductId, setTenantProductId] = useState<string>(initialTenantProductId || (products[0]?.id ?? ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [rules, setRules] = useState<
@@ -470,9 +538,17 @@ function EscalationInline(props: EscalationInlineProps) {
   }, []);
 
   useEffect(() => {
-    if (!mounted) return;
+    if (initialTenantProductId && products.some((p) => p.id === initialTenantProductId)) {
+      setTenantProductId(initialTenantProductId);
+    } else if (!tenantProductId && products[0]?.id) {
+      setTenantProductId(products[0].id);
+    }
+  }, [initialTenantProductId, products]);
+
+  useEffect(() => {
+    if (!mounted || !tenantProductId) return;
     onboardingApi
-      .getEscalation()
+      .getEscalation(tenantProductId)
       .then((data: any[]) => {
         if (!Array.isArray(data) || data.length === 0) return;
         setRules(
@@ -489,7 +565,7 @@ function EscalationInline(props: EscalationInlineProps) {
       .catch(() => {
         // keep defaults
       });
-  }, [mounted]);
+  }, [mounted, tenantProductId]);
 
   if (!mounted) return null;
 
@@ -507,6 +583,30 @@ function EscalationInline(props: EscalationInlineProps) {
           }}
         >
           {error}
+        </div>
+      )}
+
+      {products.length > 0 && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Product</span>
+          <select
+            value={tenantProductId}
+            onChange={(e) => setTenantProductId(e.target.value)}
+            style={{
+              padding: '8px 10px',
+              borderRadius: 10,
+              border: `1px solid ${borderSubtle}`,
+              background: inputBg,
+              color: textPrimary,
+              fontWeight: 700,
+              fontSize: 12,
+              minWidth: 200,
+            }}
+          >
+            {products.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -666,12 +766,16 @@ function EscalationInline(props: EscalationInlineProps) {
 
       <button
         type="button"
-        disabled={saving}
+        disabled={saving || (products.length > 0 && !tenantProductId)}
         onClick={async () => {
+          if (products.length > 0 && !tenantProductId) {
+            setError('Select a product first.');
+            return;
+          }
           setSaving(true);
           setError('');
           try {
-            await onboardingApi.putEscalation(rules);
+            await onboardingApi.putEscalation(tenantProductId || '', rules);
             await onboardingApi.setStep('kb');
             onNext();
           } catch (e: any) {
@@ -705,10 +809,11 @@ interface KbInlineProps {
   borderSubtle: string;
   accentBrand: string;
   onNext: () => void;
+  initialTenantProductId?: string;
 }
 
 function KbInline(props: KbInlineProps) {
-  const { isDark, textPrimary, textSecondary, borderSubtle, accentBrand, onNext } = props;
+  const { isDark, textPrimary, textSecondary, borderSubtle, accentBrand, onNext, initialTenantProductId } = props;
   const [mounted, setMounted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -716,7 +821,7 @@ function KbInline(props: KbInlineProps) {
   const [sources, setSources] = useState<any[]>([]);
   const [loadingLists, setLoadingLists] = useState(false);
   const [tenantProducts, setTenantProducts] = useState<any[]>([]);
-  const [tenantProductId, setTenantProductId] = useState<string>('');
+  const [tenantProductId, setTenantProductId] = useState<string>(initialTenantProductId || '');
   const [uploading, setUploading] = useState(false);
   const [crawling, setCrawling] = useState(false);
   const [creatingArticle, setCreatingArticle] = useState(false);
@@ -746,11 +851,18 @@ function KbInline(props: KbInlineProps) {
       .then((p) => {
         const list = Array.isArray(p) ? p : [];
         setTenantProducts(list);
-        if (!tenantProductId && list[0]?.id) setTenantProductId(list[0].id);
+        if (initialTenantProductId && list.some((x: any) => x.id === initialTenantProductId)) {
+          setTenantProductId(initialTenantProductId);
+        } else if (!tenantProductId && list[0]?.id) setTenantProductId(list[0].id);
       })
       .catch(() => setTenantProducts([]))
       .finally(() => setLoadingLists(false));
-  }, [mounted, tenantProductId]);
+  }, [mounted, initialTenantProductId]);
+  useEffect(() => {
+    if (initialTenantProductId && tenantProducts.some((x: any) => x.id === initialTenantProductId)) {
+      setTenantProductId(initialTenantProductId);
+    }
+  }, [initialTenantProductId, tenantProducts]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -775,6 +887,10 @@ function KbInline(props: KbInlineProps) {
   };
 
   const handleUpload = async (file: File) => {
+    if (tenantProducts.length > 0 && !tenantProductId) {
+      setError('Select a product above first.');
+      return;
+    }
     setError('');
     setSuccess('');
     setUploading(true);
@@ -782,6 +898,7 @@ function KbInline(props: KbInlineProps) {
       await onboardingApi.kbUpload(file, tenantProductId || undefined);
       const s = await onboardingApi.kbSources(tenantProductId || undefined);
       setSources(Array.isArray(s) ? s : []);
+      setSuccess('Document uploaded.');
     } catch (e: any) {
       setError(e?.message || 'Failed to upload document');
     } finally {
@@ -902,7 +1019,8 @@ function KbInline(props: KbInlineProps) {
                 padding: '7px 10px',
                 borderRadius: 10,
                 border: `1px solid ${borderSubtle}`,
-                cursor: uploading ? 'not-allowed' : 'pointer',
+                cursor: uploading || (tenantProducts.length > 0 && !tenantProductId) ? 'not-allowed' : 'pointer',
+                opacity: uploading || (tenantProducts.length > 0 && !tenantProductId) ? 0.7 : 1,
                 fontWeight: 700,
                 fontSize: 11,
                 color: textPrimary,
@@ -913,7 +1031,7 @@ function KbInline(props: KbInlineProps) {
                 type="file"
                 accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
                 style={{ display: 'none' }}
-                disabled={uploading}
+                disabled={uploading || (tenantProducts.length > 0 && !tenantProductId)}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
                   if (f) handleUpload(f);
@@ -1020,6 +1138,9 @@ function KbInline(props: KbInlineProps) {
             Extract text from public HTML pages and convert into KB articles.
           </div>
 
+          {tenantProducts.length > 0 && !tenantProductId && (
+            <div style={{ fontSize: 12, color: '#FACC15', marginBottom: 6 }}>Select a product above to upload or crawl.</div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: 8 }}>
             <input
               value={crawl.url}
@@ -1037,21 +1158,21 @@ function KbInline(props: KbInlineProps) {
             />
             <button
               type="button"
-              disabled={crawling || !crawl.url}
+              disabled={crawling || !crawl.url || (tenantProducts.length > 0 && !tenantProductId)}
               onClick={async () => {
                 setError('');
                 setSuccess('');
                 setCrawling(true);
                 try {
+                  if (tenantProducts.length > 0 && !tenantProductId) {
+                    setError('Select a product above first.');
+                    return;
+                  }
                   const src = await onboardingApi.kbCrawl(crawl.url, tenantProductId || undefined);
                   setSelectedCrawlId(src.id);
                   setSelectedUploadId(null);
-                  setSources((prev) => {
-                    const rest = Array.isArray(prev) ? prev.filter((p: any) => p.id !== src.id) : [];
-                    return [src, ...rest];
-                  });
-                  const full = await onboardingApi.kbSource(src.id).catch(() => src);
-                  setSelectedSource(full);
+                  setSelectedSource(src?.content_text != null ? src : await onboardingApi.kbSource(src.id).catch(() => src));
+                  setSuccess('Page crawled. Preview below and create KB article if needed.');
                 } catch (e: any) {
                   setError(e?.message || 'Failed to crawl URL');
                 } finally {
@@ -1066,8 +1187,8 @@ function KbInline(props: KbInlineProps) {
                 color: '#000',
                 fontWeight: 800,
                 fontSize: 12,
-                cursor: crawling || !crawl.url ? 'not-allowed' : 'pointer',
-                opacity: crawling || !crawl.url ? 0.7 : 1,
+                cursor: crawling || !crawl.url || (tenantProducts.length > 0 && !tenantProductId) ? 'not-allowed' : 'pointer',
+                opacity: crawling || !crawl.url || (tenantProducts.length > 0 && !tenantProductId) ? 0.7 : 1,
               }}
             >
               {crawling ? 'Crawling…' : 'Crawl'}
@@ -1209,84 +1330,6 @@ function KbInline(props: KbInlineProps) {
           >
             {creatingArticle ? 'Creating…' : 'Create KB article from extracted text'}
           </button>
-
-          <div
-            style={{
-              border: `1px solid ${borderSubtle}`,
-              borderRadius: 12,
-              background: pageBg,
-              padding: 10,
-              height: 150,
-              overflow: 'auto',
-              fontSize: 12,
-              color: textSecondary,
-            }}
-          >
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 800,
-                color: textSecondary,
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-                marginBottom: 6,
-              }}
-            >
-              Crawled links
-            </div>
-            {loadingLists ? (
-              <div style={{ color: textSecondary }}>Loading…</div>
-            ) : sources.filter(
-                (s: any) => (s as any).source_type !== 'upload' && !String(s.url || '').startsWith('upload:')
-              ).length === 0 ? (
-              <div style={{ color: textSecondary }}>No crawled links yet. Crawl a URL above.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 8 }}>
-                {sources
-                  .filter(
-                    (s: any) => (s as any).source_type !== 'upload' && !String(s.url || '').startsWith('upload:')
-                  )
-                  .map((s: any) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={async () => {
-                        setSelectedCrawlId(s.id);
-                        setSelectedUploadId(null);
-                        const full = await onboardingApi.kbSource(s.id).catch(() => s);
-                        setSelectedSource(full);
-                      }}
-                      style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        padding: 10,
-                        borderRadius: 10,
-                        border: `1px solid ${borderSubtle}`,
-                        background:
-                          String(selectedCrawlId) === String(s.id)
-                            ? isDark
-                              ? 'rgba(250,204,21,0.14)'
-                              : 'rgba(250,204,21,0.20)'
-                            : 'transparent',
-                        cursor: 'pointer',
-                        fontSize: 12,
-                        color: textPrimary,
-                      }}
-                    >
-                      <div style={{ fontWeight: 700, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {s.title || 'Untitled'}
-                      </div>
-                      <div style={{ color: textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {s.url}
-                      </div>
-                      <div style={{ color: textSecondary, fontSize: 11, marginTop: 4 }}>
-                        Updated {fmt(s.updated_at || s.created_at)}
-                      </div>
-                    </button>
-                  ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -1420,10 +1463,11 @@ interface AiBotInlineProps {
   inputBg: string;
   accentBrand: string;
   onNext: () => void;
+  initialTenantProductId?: string;
 }
 
 function AiBotInline(props: AiBotInlineProps) {
-  const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext } = props;
+  const { isDark, textPrimary, textSecondary, borderSubtle, inputBg, accentBrand, onNext, initialTenantProductId } = props;
   const [mounted, setMounted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -1432,7 +1476,7 @@ function AiBotInline(props: AiBotInlineProps) {
   const [tenantProducts, setTenantProducts] = useState<
     Array<{ id: string; name: string; l0_provider?: string | null; l0_model?: string | null }>
   >([]);
-  const [tenantProductId, setTenantProductId] = useState<string>('');
+  const [tenantProductId, setTenantProductId] = useState<string>(initialTenantProductId || '');
   const [providers, setProviders] = useState<
     Array<{ provider_name: string; available_models: any; default_model?: string | null }>
   >([]);
@@ -1450,7 +1494,9 @@ function AiBotInline(props: AiBotInlineProps) {
       .then(([p, m]) => {
         const prodList = Array.isArray(p) ? p : [];
         setTenantProducts(prodList);
-        const firstId = prodList[0]?.id || '';
+        const firstId = (initialTenantProductId && prodList.some((x: any) => x.id === initialTenantProductId))
+          ? initialTenantProductId
+          : (prodList[0]?.id || '');
         setTenantProductId(firstId);
 
         const prov = Array.isArray((m as any)?.providers) ? (m as any).providers : [];
@@ -1464,7 +1510,12 @@ function AiBotInline(props: AiBotInlineProps) {
       })
       .catch(() => setError('Failed to load AI models'))
       .finally(() => setLoading(false));
-  }, [mounted]);
+  }, [mounted, initialTenantProductId]);
+  useEffect(() => {
+    if (initialTenantProductId && tenantProducts.some((x) => x.id === initialTenantProductId)) {
+      setTenantProductId(initialTenantProductId);
+    }
+  }, [initialTenantProductId, tenantProducts]);
 
   useEffect(() => {
     if (!tenantProductId) return;
@@ -1726,17 +1777,28 @@ function ChannelsInline(props: ChannelsInlineProps) {
   if (!mounted) return null;
 
   const safeProducts = products || [];
-  const tenantIdForSnippet = user?.tenant_id || 'TENANT_ID';
-  const productIdForSnippet =
+  const tenantProductIdForSnippet =
     selectedProductId || user?.product_id || (safeProducts[0]?.id ?? 'PRODUCT_ID');
-  const widgetScript = `<script src="http://localhost:3000/widget.js" data-tenant="${tenantIdForSnippet}" data-product="${productIdForSnippet}"></script>`;
+  const selectedTenantProduct = safeProducts.find((p) => p.id === tenantProductIdForSnippet);
+  const tenantIdForSnippet = user?.tenant_id || selectedTenantProduct?.tenant_id || 'TENANT_ID';
+  // NOTE: for product-scoped KB/SLA/escalation we treat "product" here as tenant_product_id.
+  // Keep data-product for backward compatibility, but prefer data-tenant-product-id.
+  const widgetScript =
+    `<script src="http://localhost:3000/widget.js"` +
+    ` data-tenant="${tenantIdForSnippet}"` +
+    ` data-tenant-product-id="${tenantProductIdForSnippet}"` +
+    ` data-product="${tenantProductIdForSnippet}"` +
+    `></script>`;
   const formOrigin =
     typeof window !== 'undefined' && window.location?.origin
       ? window.location.origin
       : 'https://your-support-domain.com';
-  const qp = `?tenant_id=${encodeURIComponent(tenantIdForSnippet)}&product_id=${encodeURIComponent(
-    productIdForSnippet
-  )}`;
+  // For the hosted webform we still include `product_id` for backward compatibility,
+  // but prefer `tenant_product_id` going forward (aligns with product-scoped setup).
+  const qp =
+    `?tenant_id=${encodeURIComponent(tenantIdForSnippet)}` +
+    `&tenant_product_id=${encodeURIComponent(tenantProductIdForSnippet)}` +
+    `&product_id=${encodeURIComponent(tenantProductIdForSnippet)}`;
   const formUrl = `${formOrigin}${formPath || '/support'}${qp}`;
   const iframeSnippet = `<iframe
   src="${formUrl}"
@@ -1830,7 +1892,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
                 Product for widget
               </label>
               <select
-                value={productIdForSnippet}
+                value={tenantProductIdForSnippet}
                 onChange={(e) => setSelectedProductId(e.target.value)}
                 style={{
                   width: '100%',
@@ -2092,7 +2154,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
               webform_path: formPath || '/support',
               email_enabled: emailEnabled,
               support_email: supportEmail || null,
-              default_product_id: productIdForSnippet !== 'PRODUCT_ID' ? productIdForSnippet : null,
+              default_product_id: tenantProductIdForSnippet !== 'PRODUCT_ID' ? tenantProductIdForSnippet : null,
             });
             await onboardingApi.setStep('branding');
             onNext();
@@ -2447,6 +2509,11 @@ export default function TenantDashboardPage() {
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentsSaving, setAgentsSaving] = useState(false);
   const [agentsError, setAgentsError] = useState('');
+  const [showResetAgentPasswordModal, setShowResetAgentPasswordModal] = useState(false);
+  const [resetAgentId, setResetAgentId] = useState<string | null>(null);
+  const [resetAgentLabel, setResetAgentLabel] = useState<string>('');
+  const [resetAgentPassword, setResetAgentPassword] = useState('');
+  const [resetAgentInfo, setResetAgentInfo] = useState('');
 
   // Plan state
   const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; price_usd: unknown }>>([]);
@@ -2458,6 +2525,20 @@ export default function TenantDashboardPage() {
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [peopleFirstName, setPeopleFirstName] = useState('');
   const [peopleLastName, setPeopleLastName] = useState('');
+  const [configurationStatus, setConfigurationStatus] = useState<ConfigurationStatus | null>(null);
+  const [configStatusLoading, setConfigStatusLoading] = useState(false);
+  const [configProductId, setConfigProductId] = useState<string | null>(null);
+  const [showAddAgentModal, setShowAddAgentModal] = useState(false);
+  const [agentFilterProductId, setAgentFilterProductId] = useState<string | null>(null);
+
+  const fetchConfigurationStatus = () => {
+    setConfigStatusLoading(true);
+    onboardingApi
+      .getConfigurationStatus()
+      .then((data) => setConfigurationStatus(data))
+      .catch(() => setConfigurationStatus(null))
+      .finally(() => setConfigStatusLoading(false));
+  };
 
   useEffect(() => {
     hydrate();
@@ -2480,8 +2561,9 @@ export default function TenantDashboardPage() {
         .then((r) => (r.ok ? r.json() : []))
         .catch(() => []),
       onboardingApi.getState().catch(() => null),
+      onboardingApi.getConfigurationStatus().catch(() => null),
     ])
-      .then(([p, a, planList, state]) => {
+      .then(([p, a, planList, state, configStatus]) => {
         setProducts(Array.isArray(p) ? (p as TenantProduct[]) : []);
         setAgents(Array.isArray(a) ? a : []);
         const list = Array.isArray(planList) ? (planList as any[]) : [];
@@ -2496,6 +2578,9 @@ export default function TenantDashboardPage() {
         );
         const currentPlanId = state?.tenant?.plan_id || null;
         setSelectedPlanId(currentPlanId);
+        if (configStatus && typeof configStatus === 'object' && 'products' in configStatus) {
+          setConfigurationStatus(configStatus as ConfigurationStatus);
+        }
       })
       .catch(() => {
         setProducts([]);
@@ -2509,6 +2594,18 @@ export default function TenantDashboardPage() {
         setPlansLoading(false);
       });
   }, [mounted]);
+
+  useEffect(() => {
+    if (activeConfig === 'agents' && configProductId) {
+      setAgentFilterProductId(configProductId);
+    }
+  }, [activeConfig, configProductId]);
+
+  useEffect(() => {
+    if (mounted && activeConfig === 'configuration-hub') {
+      fetchConfigurationStatus();
+    }
+  }, [mounted, activeConfig]);
 
   if (!mounted) return null;
 
@@ -2729,6 +2826,7 @@ export default function TenantDashboardPage() {
             Configuration
           </span>
           {[
+            { key: 'configuration-hub', label: 'Setup status' },
             { key: 'agents', label: 'Agents' },
             { key: 'ticket-settings', label: 'Ticket settings' },
             { key: 'sla', label: 'SLA configuration' },
@@ -2958,6 +3056,238 @@ export default function TenantDashboardPage() {
                 gap: 14,
               }}
             >
+              {activeConfig === 'configuration-hub' && (
+                <>
+                  <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px 0' }}>Setup status</h2>
+                  <p style={{ fontSize: 13, color: textSecondary, margin: '0 0 16px 0' }}>
+                    See which product has what configured. Select a product to complete missing setup.
+                  </p>
+                  {configStatusLoading ? (
+                    <p style={{ fontSize: 13, color: textSecondary }}>Loading configuration status…</p>
+                  ) : (
+                    <>
+                      <div style={{ marginBottom: 16 }}>
+                        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 6 }}>Select product</label>
+                        <select
+                          value={configProductId || ''}
+                          onChange={(e) => setConfigProductId(e.target.value || null)}
+                          style={{
+                            minWidth: 220,
+                            padding: '8px 10px',
+                            borderRadius: 8,
+                            border: `1px solid ${borderSubtle}`,
+                            background: inputBg,
+                            color: textPrimary,
+                            fontSize: 13,
+                          }}
+                        >
+                          <option value="">— Choose a product —</option>
+                          {(configurationStatus?.products ?? []).map((tp) => (
+                            <option key={tp.id} value={tp.id}>
+                              {(() => {
+                                const cfg = tp.configuration || ({} as any);
+                                const perProductDone =
+                                  (cfg.agents ? 1 : 0) +
+                                  (cfg.kb ? 1 : 0) +
+                                  (cfg.l0_bot ? 1 : 0) +
+                                  (cfg.sla ? 1 : 0) +
+                                  (cfg.escalation ? 1 : 0);
+                                const tenant = configurationStatus?.tenant_level;
+                                const globalDone =
+                                  (tenant?.ticket_settings ? 1 : 0) +
+                                  (tenant?.channels ? 1 : 0) +
+                                  (tenant?.branding ? 1 : 0);
+                                const totalSteps = 8;
+                                const totalDone = Math.min(totalSteps, globalDone + perProductDone);
+                                return `${tp.name} (${totalDone}/8 configured)`;
+                              })()}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                          gap: 10,
+                          marginBottom: 20,
+                        }}
+                      >
+                        {(configurationStatus?.products ?? []).map((tp) => (
+                          <button
+                            key={tp.id}
+                            type="button"
+                            onClick={() => setConfigProductId(tp.id)}
+                            style={{
+                              padding: '12px 14px',
+                              borderRadius: 10,
+                              border: `1px solid ${configProductId === tp.id ? accentBrand : borderSubtle}`,
+                              background: configProductId === tp.id ? accentBrandSoft : (isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB'),
+                              color: textPrimary,
+                              textAlign: 'left',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}>{tp.name}</div>
+                            <div style={{ fontSize: 11, color: textSecondary }}>
+                              {(() => {
+                                const cfg = tp.configuration || ({} as any);
+                                const perProductDone =
+                                  (cfg.agents ? 1 : 0) +
+                                  (cfg.kb ? 1 : 0) +
+                                  (cfg.l0_bot ? 1 : 0) +
+                                  (cfg.sla ? 1 : 0) +
+                                  (cfg.escalation ? 1 : 0);
+                                const tenant = configurationStatus?.tenant_level;
+                                const globalDone =
+                                  (tenant?.ticket_settings ? 1 : 0) +
+                                  (tenant?.channels ? 1 : 0) +
+                                  (tenant?.branding ? 1 : 0);
+                                const totalSteps = 8;
+                                const totalDone = Math.min(totalSteps, globalDone + perProductDone);
+                                const remaining = totalSteps - totalDone;
+                                return `${totalDone}/8 done${remaining > 0 ? ` · ${remaining} to go` : ''}`;
+                              })()}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ borderTop: `1px solid ${borderSubtle}`, paddingTop: 16 }}>
+                        <h3 style={{ fontSize: 14, fontWeight: 600, color: textSecondary, marginBottom: 10 }}>
+                          {configProductId ? `${configurationStatus?.products?.find((p) => p.id === configProductId)?.name ?? 'Product'} — checklist` : 'Workspace (tenant) — checklist'}
+                        </h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {configProductId ? (
+                            <>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                                <span style={{ fontSize: 13 }}>Agents assigned</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ color: configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration.agents ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                    {configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration.agents ? 'Done' : 'Not done'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveConfig('agents')}
+                                    style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                                  >
+                                    Open
+                                  </button>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                                <span style={{ fontSize: 13 }}>Knowledge base</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ color: configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration.kb ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                    {configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration.kb ? 'Done' : 'Not done'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setConfigProductId(configProductId); setActiveConfig('kb'); }}
+                                    style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                                  >
+                                    Open
+                                  </button>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                                <span style={{ fontSize: 13 }}>L0 AI bot</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ color: configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration.l0_bot ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                    {configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration.l0_bot ? 'Done' : 'Not done'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setConfigProductId(configProductId); setActiveConfig('ai-bot'); }}
+                                    style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                                  >
+                                    Open
+                                  </button>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                                <span style={{ fontSize: 13 }}>SLA configuration</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ color: configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration?.sla ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                    {configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration?.sla ? 'Done' : 'Not done'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setConfigProductId(configProductId); setActiveConfig('sla'); }}
+                                    style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                                  >
+                                    Open
+                                  </button>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                                <span style={{ fontSize: 13 }}>Escalation rules</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <span style={{ color: configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration?.escalation ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                    {configurationStatus?.products?.find((p) => p.id === configProductId)?.configuration?.escalation ? 'Done' : 'Not done'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setConfigProductId(configProductId); setActiveConfig('escalation'); }}
+                                    style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                                  >
+                                    Open
+                                  </button>
+                                </div>
+                              </div>
+                            </>
+                          ) : null}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                            <span style={{ fontSize: 13 }}>Ticket settings</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ color: configurationStatus?.tenant_level?.ticket_settings ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                {configurationStatus?.tenant_level?.ticket_settings ? 'Done' : 'Not done'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setActiveConfig('ticket-settings')}
+                                style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                              >
+                                Open
+                              </button>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                            <span style={{ fontSize: 13 }}>Support channels</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ color: configurationStatus?.tenant_level?.channels ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                {configurationStatus?.tenant_level?.channels ? 'Done' : 'Not done'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setActiveConfig('channels')}
+                                style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                              >
+                                Open
+                              </button>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
+                            <span style={{ fontSize: 13 }}>Branding & white-label</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ color: configurationStatus?.tenant_level?.branding ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
+                                {configurationStatus?.tenant_level?.branding ? 'Done' : 'Not done'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setActiveConfig('branding')}
+                                style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
+                              >
+                                Open
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+
               {activeConfig === 'products' && (
                 <>
                   <div
@@ -3172,7 +3502,7 @@ export default function TenantDashboardPage() {
                       <div
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: '1.8fr 2.2fr 1.4fr 1.4fr 2.2fr',
+                          gridTemplateColumns: '1.8fr 2.2fr 1.4fr 1.4fr 2.2fr 0.9fr',
                           padding: '8px 12px',
                           background: isDark ? '#020617' : '#F3F4F6',
                           fontSize: 11,
@@ -3185,13 +3515,14 @@ export default function TenantDashboardPage() {
                         <span>Role</span>
                         <span>Support level</span>
                         <span>Assigned products</span>
+                        <span style={{ textAlign: 'right' }}>Actions</span>
                       </div>
                       {agents.map((a: any) => (
                         <div
                           key={a.id}
                           style={{
                             display: 'grid',
-                            gridTemplateColumns: '1.8fr 2.2fr 1.4fr 1.4fr 2.2fr',
+                            gridTemplateColumns: '1.8fr 2.2fr 1.4fr 1.4fr 2.2fr 0.9fr',
                             padding: '9px 12px',
                             borderTop: `1px solid ${borderSubtle}`,
                             alignItems: 'center',
@@ -3245,6 +3576,35 @@ export default function TenantDashboardPage() {
                                   .join(', ')
                               : '—'}
                           </div>
+                          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                            {a.role && String(a.role).startsWith('l') && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAgentsError('');
+                                  setResetAgentInfo('');
+                                  setResetAgentPassword('');
+                                  setResetAgentId(a.id);
+                                  const displayName =
+                                    [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
+                                  setResetAgentLabel(displayName);
+                                  setShowResetAgentPasswordModal(true);
+                                }}
+                                style={{
+                                  padding: '7px 10px',
+                                  borderRadius: 10,
+                                  border: `1px solid ${borderSubtle}`,
+                                  background: isDark ? 'rgba(15,23,42,0.75)' : '#fff',
+                                  color: textPrimary,
+                                  cursor: 'pointer',
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                }}
+                              >
+                                Reset
+                              </button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -3266,343 +3626,121 @@ export default function TenantDashboardPage() {
 
               {activeConfig === 'agents' && (
               <>
-                <div style={{ marginBottom: 4, fontSize: 13, color: accentBrand, fontWeight: 600 }}>Step 2</div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px 0' }}>Invite Support Agents</h2>
-                <p style={{ fontSize: 13, color: textSecondary, margin: '0 0 18px 0' }}>
-                  Add team members who will handle tickets. Assign them to products and support levels (L1 / L2 / L3).
-                </p>
-
-                {agentsError && (
-                  <div
-                    style={{
-                      padding: 10,
-                      background: 'rgba(239,68,68,0.08)',
-                      borderRadius: 10,
-                      color: '#ef4444',
-                      marginBottom: 16,
-                      fontSize: 12,
-                    }}
-                  >
-                    {agentsError}
-                  </div>
-                )}
-
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!agentName.trim() || !agentEmail.trim()) return;
-                    setAgentsError('');
-                    setAgentsSaving(true);
-                    try {
-                      await onboardingApi.inviteAgent({
-                        name: agentName.trim(),
-                        email: agentEmail.trim(),
-                        role:
-                          agentRole === 'tenant_admin'
-                            ? 'tenant_admin'
-                            : agentRole === 'l2_agent'
-                            ? 'l2_agent'
-                            : agentRole === 'l3_agent'
-                            ? 'l3_agent'
-                            : 'l1_agent',
-                        assigned_products: agentProducts,
-                        support_level: agentSupportLevel,
-                      });
-                      const list = await onboardingApi.getAgents();
-                      setAgents(Array.isArray(list) ? list : []);
-                      setAgentName('');
-                      setAgentEmail('');
-                      setAgentProducts([]);
-                    } catch {
-                      setAgentsError('Failed to invite agent');
-                    } finally {
-                      setAgentsSaving(false);
-                    }
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: 16,
+                    flexWrap: 'wrap',
+                    gap: 12,
                   }}
-                  style={{ marginBottom: 20 }}
                 >
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.1fr)',
-                      gap: 10,
-                      marginBottom: 10,
-                    }}
-                  >
-                    <div>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Name
-                      </label>
-                      <input
-                        value={agentName}
-                        onChange={(e) => setAgentName(e.target.value)}
-                        placeholder="Rahul"
-                        style={{
-                          width: '100%',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${borderSubtle}`,
-                          background: inputBg,
-                          color: textPrimary,
-                          fontSize: 13,
-                        }}
-                      />
-                    </div>
-                    <div>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Email
-                      </label>
-                      <input
-                        type="email"
-                        value={agentEmail}
-                        onChange={(e) => setAgentEmail(e.target.value)}
-                        placeholder="rahul@company.com"
-                        style={{
-                          width: '100%',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${borderSubtle}`,
-                          background: inputBg,
-                          color: textPrimary,
-                          fontSize: 13,
-                        }}
-                      />
-                    </div>
+                  <div>
+                    <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px 0' }}>Agents</h2>
+                    <p style={{ fontSize: 13, color: textSecondary, margin: 0 }}>
+                      Team members who handle tickets. Filter by product or add agents.
+                    </p>
                   </div>
-
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.1fr)',
-                      gap: 10,
-                      marginBottom: 10,
-                    }}
-                  >
-                    <div>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Role
-                      </label>
-                      <select
-                        value={agentRole}
-                        onChange={(e) => setAgentRole(e.target.value)}
-                        style={{
-                          width: '100%',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${borderSubtle}`,
-                          background: inputBg,
-                          color: textPrimary,
-                          fontSize: 13,
-                        }}
-                      >
-                        <option value="l1_agent">Agent</option>
-                        <option value="tenant_admin">Admin</option>
-                        <option value="l2_agent">L2 Agent</option>
-                        <option value="l3_agent">L3 Agent</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Support Level
-                      </label>
-                      <select
-                        value={agentSupportLevel}
-                        onChange={(e) => setAgentSupportLevel(e.target.value)}
-                        style={{
-                          width: '100%',
-                          padding: '9px 10px',
-                          borderRadius: 8,
-                          border: `1px solid ${borderSubtle}`,
-                          background: inputBg,
-                          color: textPrimary,
-                          fontSize: 13,
-                        }}
-                      >
-                        <option value="L1">L1</option>
-                        <option value="L2">L2</option>
-                        <option value="L3">L3</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {products.length > 0 && (
-                    <div style={{ marginBottom: 10 }}>
-                      <label
-                        style={{
-                          display: 'block',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: textSecondary,
-                          marginBottom: 4,
-                        }}
-                      >
-                        Assigned Products
-                      </label>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                        {products.map((p) => (
-                          <label
-                            key={p.id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              cursor: 'pointer',
-                              fontSize: 12,
-                              color: textSecondary,
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={agentProducts.includes(p.id)}
-                              onChange={() =>
-                                setAgentProducts((prev) =>
-                                  prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id]
-                                )
-                              }
-                            />
-                            {p.name}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   <button
-                    type="submit"
-                    disabled={agentsSaving}
+                    type="button"
+                    onClick={() => {
+                      setAgentsError('');
+                      setAgentProducts(agentFilterProductId ? [agentFilterProductId] : []);
+                      setShowAddAgentModal(true);
+                    }}
                     style={{
-                      padding: '9px 18px',
+                      padding: '8px 14px',
                       borderRadius: 8,
-                      background: accentBrand,
-                      color: '#000',
                       border: 'none',
-                      fontWeight: 600,
+                      background: accentBrand,
+                      color: '#0B1120',
                       fontSize: 13,
-                      cursor: agentsSaving ? 'not-allowed' : 'pointer',
-                      opacity: agentsSaving ? 0.8 : 1,
+                      fontWeight: 600,
+                      cursor: 'pointer',
                     }}
                   >
-                    {agentsSaving ? 'Inviting...' : 'Invite Agent'}
+                    Add agent
                   </button>
-                </form>
+                </div>
+
+                <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: textSecondary }}>Filter by product</span>
+                  <select
+                    value={agentFilterProductId || ''}
+                    onChange={(e) => setAgentFilterProductId(e.target.value || null)}
+                    style={{
+                      minWidth: 180,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      border: `1px solid ${borderSubtle}`,
+                      background: inputBg,
+                      color: textPrimary,
+                      fontSize: 13,
+                    }}
+                  >
+                    <option value="">All products</option>
+                    {products.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
 
                 {agentsLoading ? (
                   <p style={{ fontSize: 12, color: textSecondary }}>Loading...</p>
-                ) : agents.length > 0 ? (
-                  <div style={{ marginBottom: 18 }}>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: textSecondary,
-                        marginBottom: 6,
-                      }}
-                    >
-                      Invited agents ({agents.length})
-                    </div>
-                    <div
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 6,
-                      }}
-                    >
-                      {agents.map((a: any) => {
-                        const roleLabel = (a.roleRef?.name || 'agent').replace('_', ' ');
-                        const productsForAgent =
-                          Array.isArray(a.product_agents) && a.product_agents.length > 0
-                            ? a.product_agents
-                                .map((pa: any) => pa.tenant_product?.name)
-                                .filter(Boolean)
-                                .join(', ')
-                            : 'No products assigned';
-                        return (
-                          <div
-                            key={a.id}
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              padding: '8px 10px',
-                              borderRadius: 10,
-                              border: `1px solid ${borderSubtle}`,
-                              background: inputBg,
-                              fontSize: 12,
-                            }}
-                          >
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                              <span style={{ fontWeight: 600, color: textPrimary }}>
-                                {a.name || 'Agent'}
-                              </span>
-                              <span style={{ color: textSecondary }}>
-                                Role: {roleLabel} • Support level: {a.product_agents?.[0]?.support_level || 'L1'}
-                              </span>
-                              <span style={{ color: textSecondary }}>Products: {productsForAgent}</span>
+                ) : (() => {
+                  const filtered = agentFilterProductId
+                    ? agents.filter((a: any) =>
+                        Array.isArray(a.assigned_products) &&
+                        a.assigned_products.some((p: any) => p.id === agentFilterProductId)
+                      )
+                    : agents;
+                  return filtered.length > 0 ? (
+                    <div style={{ marginBottom: 18 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 6 }}>
+                        {agentFilterProductId ? `Agents for this product (${filtered.length})` : `All agents (${filtered.length})`}
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {filtered.map((a: any) => {
+                          const roleLabel = (a.role || 'agent').replace(/_/g, ' ');
+                          const displayName = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
+                          const productsForAgent =
+                            Array.isArray(a.assigned_products) && a.assigned_products.length > 0
+                              ? a.assigned_products.map((p: any) => p.name).filter(Boolean).join(', ')
+                              : 'No products assigned';
+                          return (
+                            <div
+                              key={a.id}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                padding: '8px 10px',
+                                borderRadius: 10,
+                                border: `1px solid ${borderSubtle}`,
+                                background: inputBg,
+                                fontSize: 12,
+                              }}
+                            >
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <span style={{ fontWeight: 600, color: textPrimary }}>{displayName}</span>
+                                <span style={{ color: textSecondary }}>
+                                  Role: {roleLabel} • Support level: {a.primary_support_level || 'L1'}
+                                </span>
+                                <span style={{ color: textSecondary }}>Products: {productsForAgent}</span>
+                              </div>
+                              <div />
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ) : null}
-
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await onboardingApi.setStep('ticket_settings');
-                      setActiveConfig('ticket-settings');
-                    } catch {
-                      setAgentsError('Failed to update step');
-                    }
-                  }}
-                  style={{
-                    padding: '10px 20px',
-                    borderRadius: 10,
-                    background: accentBrand,
-                    color: '#000',
-                    border: 'none',
-                    fontWeight: 700,
-                    fontSize: 13,
-                    cursor: 'pointer',
-                    alignSelf: 'flex-start',
-                    marginTop: 4,
-                  }}
-                >
-                  Continue to Ticket Settings
-                </button>
+                  ) : (
+                    <div style={{ padding: 18, border: `1px dashed ${borderSubtle}`, borderRadius: 12, fontSize: 12, color: textSecondary }}>
+                      {agentFilterProductId ? 'No agents assigned to this product yet.' : 'No agents yet. Click Add agent to invite.'}
+                    </div>
+                  );
+                })()}
               </>
             )}
 
@@ -3642,6 +3780,8 @@ export default function TenantDashboardPage() {
                   inputBg={inputBg}
                   accentBrand={accentBrand}
                   onNext={() => setActiveConfig('escalation')}
+                  products={products}
+                  initialTenantProductId={configProductId ?? undefined}
                 />
               </>
             )}
@@ -3662,6 +3802,8 @@ export default function TenantDashboardPage() {
                   inputBg={inputBg}
                   accentBrand={accentBrand}
                   onNext={() => setActiveConfig('kb')}
+                  products={configurationStatus?.products ?? []}
+                  initialTenantProductId={configProductId ?? undefined}
                 />
               </>
             )}
@@ -3682,6 +3824,7 @@ export default function TenantDashboardPage() {
                   borderSubtle={borderSubtle}
                   accentBrand={accentBrand}
                   onNext={() => setActiveConfig('ai-bot')}
+                  initialTenantProductId={configProductId ?? undefined}
                 />
               </>
             )}
@@ -3703,6 +3846,7 @@ export default function TenantDashboardPage() {
                   inputBg={inputBg}
                   accentBrand={accentBrand}
                   onNext={() => setActiveConfig('channels')}
+                  initialTenantProductId={configProductId ?? undefined}
                 />
               </>
             )}
@@ -3845,8 +3989,8 @@ export default function TenantDashboardPage() {
                     setAgentEmail('');
                     setAgentProducts([]);
                     setShowPeopleModal(false);
-                  } catch {
-                    setAgentsError('Failed to add person');
+                  } catch (err: any) {
+                    setAgentsError(err?.message || (err?.error && String(err.error)) || 'Failed to add person');
                   } finally {
                     setAgentsSaving(false);
                   }
@@ -4098,6 +4242,285 @@ export default function TenantDashboardPage() {
                     }}
                   >
                     {agentsSaving ? 'Adding…' : 'Add person'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showAddAgentModal && (
+          <div
+            onClick={() => {
+              if (!agentsSaving) setShowAddAgentModal(false);
+            }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.55)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 20,
+              zIndex: 1000,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: 'min(480px, 96vw)',
+                background: bgSurface,
+                borderRadius: 16,
+                border: `1px solid ${borderSubtle}`,
+                padding: 18,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>Add agent</div>
+                  <div style={{ fontSize: 12, color: textSecondary }}>
+                    Invite a team member and assign them to products. Support level is set by role.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { if (!agentsSaving) setShowAddAgentModal(false); }}
+                  style={{ border: 'none', background: 'transparent', color: textSecondary, cursor: 'pointer', fontSize: 18 }}
+                >
+                  ×
+                </button>
+              </div>
+              {agentsError && (
+                <div style={{ padding: 10, background: 'rgba(239,68,68,0.08)', borderRadius: 10, color: '#ef4444', marginBottom: 12, fontSize: 12 }}>
+                  {agentsError}
+                </div>
+              )}
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!agentName.trim() || !agentEmail.trim()) return;
+                  setAgentsError('');
+                  setAgentsSaving(true);
+                  try {
+                    await onboardingApi.inviteAgent({
+                      name: agentName.trim(),
+                      email: agentEmail.trim(),
+                      role: agentRole === 'tenant_admin' ? 'tenant_admin' : agentRole === 'l2_agent' ? 'l2_agent' : agentRole === 'l3_agent' ? 'l3_agent' : 'l1_agent',
+                      assigned_products: agentRole === 'tenant_admin' ? [] : agentProducts,
+                    });
+                    const list = await onboardingApi.getAgents();
+                    setAgents(Array.isArray(list) ? list : []);
+                    setAgentName('');
+                    setAgentEmail('');
+                    setAgentProducts(agentFilterProductId ? [agentFilterProductId] : []);
+                    setShowAddAgentModal(false);
+                  } catch (err: any) {
+                    setAgentsError(err?.message || (err?.error && String(err.error)) || 'Failed to invite agent');
+                  } finally {
+                    setAgentsSaving(false);
+                  }
+                }}
+                style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+              >
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 4 }}>Name</label>
+                    <input
+                      value={agentName}
+                      onChange={(e) => setAgentName(e.target.value)}
+                      placeholder="Rahul"
+                      style={{ width: '100%', padding: '9px 10px', borderRadius: 8, border: `1px solid ${borderSubtle}`, background: inputBg, color: textPrimary, fontSize: 13 }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 4 }}>Email</label>
+                    <input
+                      type="email"
+                      value={agentEmail}
+                      onChange={(e) => setAgentEmail(e.target.value)}
+                      placeholder="rahul@company.com"
+                      style={{ width: '100%', padding: '9px 10px', borderRadius: 8, border: `1px solid ${borderSubtle}`, background: inputBg, color: textPrimary, fontSize: 13 }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 4 }}>Role</label>
+                  <select
+                    value={agentRole}
+                    onChange={(e) => setAgentRole(e.target.value)}
+                    style={{ width: '100%', padding: '9px 10px', borderRadius: 8, border: `1px solid ${borderSubtle}`, background: inputBg, color: textPrimary, fontSize: 13 }}
+                  >
+                    <option value="l1_agent">L1 Agent</option>
+                    <option value="l2_agent">L2 Agent</option>
+                    <option value="l3_agent">L3 Agent</option>
+                    <option value="tenant_admin">Admin</option>
+                  </select>
+                </div>
+                {agentRole !== 'tenant_admin' && products.length > 0 && (
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 4 }}>Assigned products</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {products.map((p) => (
+                        <label key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12, color: textSecondary }}>
+                          <input
+                            type="checkbox"
+                            checked={agentProducts.includes(p.id)}
+                            onChange={() => setAgentProducts((prev) => prev.includes(p.id) ? prev.filter((x) => x !== p.id) : [...prev, p.id])}
+                          />
+                          {p.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={agentsSaving || !agentName.trim() || !agentEmail.trim()}
+                  style={{
+                    padding: '9px 18px',
+                    borderRadius: 8,
+                    background: accentBrand,
+                    color: '#0B1120',
+                    border: 'none',
+                    fontWeight: 600,
+                    fontSize: 13,
+                    cursor: agentsSaving ? 'not-allowed' : 'pointer',
+                    opacity: agentsSaving ? 0.8 : 1,
+                    alignSelf: 'flex-start',
+                  }}
+                >
+                  {agentsSaving ? 'Inviting…' : 'Invite agent'}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showResetAgentPasswordModal && (
+          <div
+            onClick={() => {
+              if (!agentsSaving) setShowResetAgentPasswordModal(false);
+            }}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.55)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 20,
+              zIndex: 1000,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: 'min(520px, 96vw)',
+                background: bgSurface,
+                borderRadius: 16,
+                border: `1px solid ${borderSubtle}`,
+                padding: 18,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 800 }}>Reset agent password</div>
+                  <div style={{ fontSize: 12, color: textSecondary }}>
+                    Agent: {resetAgentLabel || resetAgentId || '—'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!agentsSaving) setShowResetAgentPasswordModal(false);
+                  }}
+                  style={{ border: 'none', background: 'transparent', color: textSecondary, cursor: 'pointer', fontSize: 18 }}
+                >
+                  ×
+                </button>
+              </div>
+
+              {agentsError && (
+                <div style={{ padding: 10, background: 'rgba(239,68,68,0.08)', borderRadius: 10, color: '#ef4444', marginBottom: 12, fontSize: 12 }}>
+                  {agentsError}
+                </div>
+              )}
+              {resetAgentInfo && (
+                <div style={{ padding: 10, background: 'rgba(34,197,94,0.12)', borderRadius: 10, color: '#4ADE80', marginBottom: 12, fontSize: 12 }}>
+                  {resetAgentInfo}
+                </div>
+              )}
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!resetAgentId) return;
+                  if (resetAgentPassword.trim().length < 8) {
+                    setAgentsError('Password must be at least 8 characters');
+                    return;
+                  }
+                  setAgentsError('');
+                  setResetAgentInfo('');
+                  setAgentsSaving(true);
+                  try {
+                    await onboardingApi.setAgentPassword(resetAgentId, resetAgentPassword.trim());
+                    setResetAgentInfo('Password updated. Agent can log in now.');
+                  } catch (err: any) {
+                    setAgentsError(err?.message || (err?.error && String(err.error)) || 'Failed to update password');
+                  } finally {
+                    setAgentsSaving(false);
+                  }
+                }}
+                style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+              >
+                <div>
+                  <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: textSecondary, marginBottom: 4 }}>
+                    New password
+                  </label>
+                  <input
+                    type="password"
+                    value={resetAgentPassword}
+                    onChange={(e) => setResetAgentPassword(e.target.value)}
+                    placeholder="Minimum 8 characters"
+                    style={{ width: '100%', padding: '9px 10px', borderRadius: 10, border: `1px solid ${borderSubtle}`, background: inputBg, color: textPrimary, fontSize: 13 }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!agentsSaving) setShowResetAgentPasswordModal(false);
+                    }}
+                    style={{
+                      padding: '9px 12px',
+                      borderRadius: 10,
+                      border: `1px solid ${borderSubtle}`,
+                      background: 'transparent',
+                      color: textPrimary,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={agentsSaving || resetAgentPassword.trim().length < 8}
+                    style={{
+                      padding: '9px 12px',
+                      borderRadius: 10,
+                      border: 'none',
+                      background: accentBrand,
+                      color: '#0B1120',
+                      cursor: agentsSaving ? 'not-allowed' : 'pointer',
+                      fontSize: 12,
+                      fontWeight: 800,
+                      opacity: agentsSaving || resetAgentPassword.trim().length < 8 ? 0.7 : 1,
+                    }}
+                  >
+                    {agentsSaving ? 'Updating…' : 'Update password'}
                   </button>
                 </div>
               </form>

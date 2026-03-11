@@ -259,20 +259,15 @@ export default function SetupKnowledgeBasePage() {
                   const src = await onboardingApi.kbCrawl(crawl.url, tenantProductId || undefined);
                   setSelectedCrawlId(src.id);
                   setSelectedUploadId(null);
-                  // Optimistically add/update the crawled source locally
-                  setSources((prev) => {
-                    const rest = Array.isArray(prev) ? prev.filter((p: any) => p.id !== src.id) : [];
-                    return [src, ...rest];
-                  });
-                  // Then refresh from backend in the background
+                  // Use crawl response for preview (it includes content_text); merge with any extra fields from a follow-up fetch
+                  setSelectedSource(src?.content_text != null ? src : await onboardingApi.kbSource(src.id).catch(() => src));
+                  // Refresh only uploaded docs list; do not overwrite so we keep current crawl in session
                   onboardingApi
                     .kbSources(tenantProductId || undefined)
                     .then((list) => {
                       if (Array.isArray(list)) setSources(list);
                     })
                     .catch(() => {});
-                  const full = await onboardingApi.kbSource(src.id).catch(() => src);
-                  setSelectedSource(full);
                 } catch (e: any) {
                   setError(e?.message || 'Failed to crawl URL');
                 } finally {
@@ -331,58 +326,6 @@ export default function SetupKnowledgeBasePage() {
           >
             {creatingArticle ? 'Creating…' : 'Create KB Article from extracted text'}
           </button>
-
-          <div style={{ border: `1px solid ${borderColor}`, borderRadius: 14, background: pageBg, padding: 12, height: 220, overflow: 'auto' }}>
-            <div style={{ fontSize: 12, fontWeight: 900, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
-              Crawled links
-            </div>
-            {loadingLists ? (
-              <div style={{ color: textSecondary, fontSize: 13 }}>Loading…</div>
-            ) : sources.filter((s: any) => (s as any).source_type !== 'upload' && !String(s.url || '').startsWith('upload:')).length === 0 ? (
-              <div style={{ color: textSecondary, fontSize: 13 }}>No crawled links yet. Crawl a URL above.</div>
-            ) : (
-              <div style={{ display: 'grid', gap: 10 }}>
-                {sources
-                  .filter((s: any) => (s as any).source_type !== 'upload' && !String(s.url || '').startsWith('upload:'))
-                  .map((s: any) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={async () => {
-                        setSelectedCrawlId(s.id);
-                        setSelectedUploadId(null);
-                        const full = await onboardingApi.kbSource(s.id).catch(() => s);
-                        setSelectedSource(full);
-                      }}
-                      style={{
-                        width: '100%',
-                        textAlign: 'left',
-                        padding: 12,
-                        borderRadius: 14,
-                        border: `1px solid ${borderColor}`,
-                        background: String(selectedCrawlId) === String(s.id) ? (isDark ? 'rgba(250,204,21,0.10)' : 'rgba(250,204,21,0.18)') : 'transparent',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ color: textPrimary, fontWeight: 900, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {s.title || 'Untitled'}
-                          </div>
-                          <div style={{ color: textSecondary, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {s.url}
-                          </div>
-                          <div style={{ color: textSecondary, fontSize: 12, marginTop: 4 }}>
-                            Updated {fmt(s.updated_at || s.created_at)}
-                          </div>
-                        </div>
-                        <div style={{ color: textSecondary, fontSize: 12, fontWeight: 900, whiteSpace: 'nowrap' }}>Preview</div>
-                      </div>
-                    </button>
-                  ))}
-              </div>
-            )}
-          </div>
         </div>
 
       </div>

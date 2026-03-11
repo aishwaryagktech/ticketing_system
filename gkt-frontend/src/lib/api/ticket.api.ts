@@ -8,6 +8,6 @@ export const ticketApi = {
   assign: (id: string, agentId: string) => apiClient.patch(`/api/tickets/${id}/assign`, { agent_id: agentId }),
   updateStatus: (id: string, status: string) => apiClient.patch(`/api/tickets/${id}/status`, { status }),
   submitCSAT: (id: string, score: number, comment?: string) => apiClient.patch(`/api/tickets/${id}/csat`, { score, comment }),
-  getComments: (id: string) => apiClient.get(`/api/tickets/${id}/comments`),
+  getConversation: (id: string) => apiClient.get(`/api/tickets/${id}/conversation`),
   addComment: (id: string, body: string, isInternal?: boolean) => apiClient.post(`/api/tickets/${id}/comments`, { body, is_internal: isInternal }),
 };

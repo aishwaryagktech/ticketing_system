@@ -53,7 +53,13 @@ export default function SetupSlaPage() {
     setSaving(true);
     setError('');
     try {
+      // Product-scoped SLA: choose first product if available (or require selection in a follow-up iteration)
+      const products = await onboardingApi.getProducts().catch(() => []);
+      const tenantProductId = Array.isArray(products) && products[0]?.id ? String(products[0].id) : '';
+      if (!tenantProductId) throw new Error('No product found. Create a product first.');
+
       await onboardingApi.putSla(
+        tenantProductId,
         rows.map((r) => ({
           priority: r.priority,
           response_time_mins: Number(r.response),

@@ -13,6 +13,9 @@ export async function GET(_req: NextRequest) {
     if (!script || !script.dataset) return;
     var tenantId = script.dataset.tenant || '';
     var productId = script.dataset.product || '';
+    var tenantProductId = script.dataset.tenantProductId || '';
+    var userId = script.dataset.userId || '';
+    var userEmail = script.dataset.userEmail || '';
     if (!tenantId) return;
 
     var apiBase = '${API_BASE}';
@@ -62,9 +65,10 @@ export async function GET(_req: NextRequest) {
       // Chat iframe (initially hidden)
       var iframe = document.createElement('iframe');
       var src = chatBase + '/portal/chat?tenant_id=' + encodeURIComponent(tenantId);
-      if (productId) {
-        src += '&product_id=' + encodeURIComponent(productId);
-      }
+      if (tenantProductId) src += '&tenant_product_id=' + encodeURIComponent(tenantProductId);
+      else if (productId) src += '&product_id=' + encodeURIComponent(productId);
+      if (userId) src += '&user_id=' + encodeURIComponent(userId);
+      if (userEmail) src += '&user_email=' + encodeURIComponent(userEmail);
       src += '&primary_color=' + encodeURIComponent(primary);
       if (logo) {
         src += '&logo=' + encodeURIComponent(logo);
@@ -99,6 +103,27 @@ export async function GET(_req: NextRequest) {
       launcher.addEventListener('click', function () {
         open = !open;
         iframe.style.display = open ? 'block' : 'none';
+      });
+
+      // Allow the iframe to request close/reset via postMessage
+      window.addEventListener('message', function (event) {
+        try {
+          if (!event || !event.data) return;
+          var data = event.data;
+          if (typeof data !== 'object') return;
+          if (data.type === 'gkt-widget-close') {
+            open = false;
+            iframe.style.display = 'none';
+          }
+          if (data.type === 'gkt-widget-new-session') {
+            // Reload iframe src without cached session_id so chat starts fresh
+            iframe.src = iframe.src.split('#')[0];
+            open = true;
+            iframe.style.display = 'block';
+          }
+        } catch (e) {
+          // ignore
+        }
       });
 
       document.body.appendChild(iframe);
