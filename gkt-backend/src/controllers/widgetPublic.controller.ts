@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { prisma } from '../db/postgres';
 import { Conversation } from '../../mongo/models/conversation.model';
+import { getIO } from '../config/socket';
 
 // GET /api/widget/tickets?tenant_id=&user_email=
 export async function listUserTickets(req: Request, res: Response): Promise<void> {
@@ -25,6 +26,7 @@ export async function listUserTickets(req: Request, res: Response): Promise<void
       select: {
         id: true,
         ticket_number: true,
+        assigned_to: true,
         subject: true,
         status: true,
         priority: true,
@@ -194,6 +196,22 @@ export async function createTicketMessage(req: Request, res: Response): Promise<
         is_bot: false,
       },
     });
+
+    // Push user reply in real time to any listeners on this ticket room (widget + agent UIs).
+    try {
+      const io = getIO();
+      io.to(`ticket:${ticket.id}`).emit('ticket:message', {
+        ticket_id: ticket.id,
+        from: 'user',
+        text,
+        created_at: new Date().toISOString(),
+      });
+    } catch (socketErr) {
+      console.warn(
+        'createTicketMessage: failed to emit ticket:message over socket (continuing):',
+        (socketErr as Error).message,
+      );
+    }
 
     // Mirror user reply into Mongo Conversation thread
     try {

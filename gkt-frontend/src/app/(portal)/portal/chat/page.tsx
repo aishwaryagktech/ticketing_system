@@ -5,6 +5,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { botApi } from '@/lib/api/bot.api';
 import { widgetApi } from '@/lib/api/widget.api';
+import { getSocket, disconnectSocket } from '@/lib/socket';
+import type { Socket } from 'socket.io-client';
 
 interface Message {
   id: string;
@@ -28,7 +30,14 @@ export default function PortalChatPage() {
   const [ended, setEnded] = useState(false);
   const [view, setView] = useState<'bot' | 'tickets'>('bot');
   const [ticketList, setTicketList] = useState<
-    Array<{ id: string; ticket_number: string; subject: string; status: string; updated_at: string }>
+    Array<{
+      id: string;
+      ticket_number: string;
+      subject: string;
+      status: string;
+      updated_at: string;
+      assigned_to: string | null;
+    }>
   >([]);
   const [ticketLoading, setTicketLoading] = useState(false);
   const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
@@ -43,7 +52,8 @@ export default function PortalChatPage() {
   const [error, setError] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const hasWindow = typeof window !== 'undefined';
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const pollRef = useRef<NodeJS.Timeout | null>(null); // kept for backward compatibility but no longer used for Mongo polling
+  const ticketSocketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -76,9 +86,68 @@ export default function PortalChatPage() {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
+  // Live ticket conversation via Socket.io only when ticket status is in_progress / pending_user.
+  useEffect(() => {
+    if (view !== 'tickets' || !activeTicketId) {
+      if (ticketSocketRef.current) {
+        ticketSocketRef.current.off('ticket:message');
+        disconnectSocket();
+        ticketSocketRef.current = null;
+      }
+      return;
+    }
+
+    const t = ticketList.find((x) => x.id === activeTicketId);
+    const status = (t?.status || '').toLowerCase();
+    if (!t || (status !== 'in_progress' && status !== 'pending_user')) {
+      if (ticketSocketRef.current) {
+        ticketSocketRef.current.off('ticket:message');
+        disconnectSocket();
+        ticketSocketRef.current = null;
+      }
+      return;
+    }
+
+    const socket = getSocket();
+    ticketSocketRef.current = socket;
+    if (!socket.connected) {
+      socket.connect();
+    }
+    socket.emit('join:ticket', activeTicketId);
+
+    const handler = (payload: any) => {
+      if (!payload || payload.ticket_id !== activeTicketId) return;
+      const fromRaw = String(payload.from || 'agent');
+      const from: 'user' | 'bot' = fromRaw === 'user' ? 'user' : 'bot';
+      const text = String(payload.text || '');
+      if (!text) return;
+      const id = String(payload.id || `${Date.now()}-rt`);
+      const created_at = payload.created_at;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id,
+          from,
+          text,
+          created_at,
+        },
+      ]);
+    };
+
+    socket.on('ticket:message', handler);
+
+    return () => {
+      socket.off('ticket:message', handler);
+    };
+  }, [view, activeTicketId, ticketList]);
+
   useEffect(() => {
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (ticketSocketRef.current) {
+        ticketSocketRef.current.off('ticket:message');
+        disconnectSocket();
+        ticketSocketRef.current = null;
+      }
     };
   }, []);
 
@@ -155,6 +224,11 @@ export default function PortalChatPage() {
 
   const handleClose = () => {
     if (!hasWindow) return;
+    if (ticketSocketRef.current) {
+      ticketSocketRef.current.off('ticket:message');
+      disconnectSocket();
+      ticketSocketRef.current = null;
+    }
     window.parent?.postMessage({ type: 'gkt-widget-close' }, '*');
   };
 
@@ -192,6 +266,7 @@ export default function PortalChatPage() {
           ticket_number: String(t.ticket_number),
           subject: String(t.subject || ''),
           status: String(t.status || ''),
+          assigned_to: t.assigned_to ? String(t.assigned_to) : null,
           updated_at: String(t.updated_at || ''),
         })),
       );
@@ -220,13 +295,6 @@ export default function PortalChatPage() {
     }
   };
 
-  const startTicketPolling = (ticketId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => {
-      loadTicketMessages(ticketId);
-    }, 5000);
-  };
-
   const handleYes = () => {
     setInput('yes');
     setTimeout(() => handleSend(), 0);
@@ -250,11 +318,16 @@ export default function PortalChatPage() {
       // so the user can continue chatting with a human.
       setEnded(true);
       if (ticketId && tenantId && userEmail) {
+        // Ensure any existing ticket socket is reset when switching into ticket view
+        if (ticketSocketRef.current) {
+          ticketSocketRef.current.off('ticket:message');
+          disconnectSocket();
+          ticketSocketRef.current = null;
+        }
         setView('tickets');
         setActiveTicketId(ticketId);
         await loadTickets();
         await loadTicketMessages(ticketId);
-        startTicketPolling(ticketId);
       }
     } catch (e: any) {
       setError(e?.message || 'Failed to create ticket');
@@ -440,7 +513,6 @@ export default function PortalChatPage() {
                     onClick={() => {
                       setActiveTicketId(t.id);
                       loadTicketMessages(t.id);
-                      startTicketPolling(t.id);
                     }}
                     style={{
                       width: '100%',
@@ -481,6 +553,62 @@ export default function PortalChatPage() {
                 gap: 8,
               }}
             >
+              {activeTicketId && (
+                <div
+                  style={{
+                    marginBottom: 8,
+                    padding: '8px 10px',
+                    borderRadius: 10,
+                    background: 'linear-gradient(90deg, rgba(30,64,175,0.9), rgba(56,189,248,0.85))',
+                    color: '#F9FAFB',
+                    fontSize: 11,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    boxShadow: '0 8px 16px rgba(15,23,42,0.5)',
+                  }}
+                >
+                  <span style={{ fontWeight: 600 }}>
+                    {(() => {
+                      const t = ticketList.find((x) => x.id === activeTicketId);
+                      if (!t) return null;
+                      const s = (t.status || '').toLowerCase();
+                      if (!t.assigned_to) {
+                        return 'Waiting for an agent to be assigned…';
+                      }
+                      if (s === 'new_ticket' || s === 'open') {
+                        return 'An agent has been assigned and will get back to you soon.';
+                      }
+                      if (s === 'in_progress') {
+                        return 'You are now chatting with a support agent.';
+                      }
+                      return null;
+                    })()}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!activeTicketId) return;
+                      loadTickets();
+                      loadTicketMessages(activeTicketId);
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 999,
+                      border: '1px solid rgba(15,23,42,0.35)',
+                      background: 'rgba(15,23,42,0.15)',
+                      color: '#EFF6FF',
+                      fontSize: 10,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
               {messages.map((m) => (
                 <div
                   key={m.id}

@@ -3,6 +3,7 @@ import { prisma } from '../db/postgres';
 import { AuthRequest } from '../middleware/auth';
 import { getActiveAdapter } from '../ai/provider';
 import { Conversation } from '../../mongo/models/conversation.model';
+import { getIO } from '../config/socket';
 
 // GET /api/tickets/:id/comments
 export async function listComments(req: AuthRequest, res: Response): Promise<void> {
@@ -116,7 +117,26 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
         );
       }
     } catch (mongoErr) {
-      console.warn('createComment: failed to mirror agent message to Conversation (continuing):', (mongoErr as Error).message);
+      console.warn(
+        'createComment: failed to mirror agent message to Conversation (continuing):',
+        (mongoErr as Error).message,
+      );
+    }
+
+    // Push agent reply in real time to any listeners on this ticket room (widget + agent UIs).
+    try {
+      const io = getIO();
+      io.to(`ticket:${ticket.id}`).emit('ticket:message', {
+        ticket_id: ticket.id,
+        from: is_internal === true ? 'agent_internal' : 'agent',
+        text: body.trim(),
+        created_at: new Date().toISOString(),
+      });
+    } catch (socketErr) {
+      console.warn(
+        'createComment: failed to emit ticket:message over socket (continuing):',
+        (socketErr as Error).message,
+      );
     }
 
     res.status(201).json(comment);
