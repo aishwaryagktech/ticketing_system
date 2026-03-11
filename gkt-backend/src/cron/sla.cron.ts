@@ -1,10 +1,17 @@
+import { markBreachedTickets } from '../services/sla.service';
+
 /**
  * SLA Cron — runs every 5 minutes
- * 1. Query all open tickets where sla_deadline is approaching or passed
- * 2. At 75% elapsed → emit sla:warning via Socket.io + write notification
- * 3. At 100% elapsed → set sla_breached = true + email + SMS (P1) + emit sla:breached
+ * Marks tickets as sla_breached when sla_deadline has passed and status is not resolved/closed.
+ * (75% warning and notifications can be added later.)
  */
 export async function runSLACron(): Promise<void> {
-  // TODO: Implement SLA deadline checking
-  console.log('SLA cron executed');
+  try {
+    const count = await markBreachedTickets();
+    if (count > 0) {
+      console.log(`SLA cron: marked ${count} ticket(s) as breached`);
+    }
+  } catch (e) {
+    console.error('SLA cron error:', e);
+  }
 }

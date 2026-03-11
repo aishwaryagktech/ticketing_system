@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 import { env } from '../config/env';
 import { Conversation } from '../../mongo/models/conversation.model';
 import { getActiveAdapter } from '../ai/provider';
+import { getResolutionTimeMins, computeSlaDeadline } from '../services/sla.service';
 
 type SessionMessage = { from: 'user' | 'bot'; text: string; at: number };
 type BotSession = {
@@ -221,6 +222,20 @@ async function createHandoffTicket(args: {
     return priority;
   })();
 
+  let slaDeadline: Date | null = null;
+  try {
+    const resolutionMins = await getResolutionTimeMins(
+      tenant.product_id,
+      session.tenant_product_id,
+      normalizedPriority
+    );
+    if (resolutionMins != null && resolutionMins > 0) {
+      slaDeadline = computeSlaDeadline(new Date(), resolutionMins);
+    }
+  } catch (slaErr) {
+    console.warn('createHandoffTicket: SLA policy lookup failed (continuing without SLA):', (slaErr as Error).message);
+  }
+
   const ticket = await prisma.ticket.create({
     data: {
       ticket_number: ticketNumber,
@@ -242,6 +257,7 @@ async function createHandoffTicket(args: {
       ai_confidence: aiConfidence,
       sentiment: sentiment as any,
       sentiment_trend: sentimentTrend,
+      sla_deadline: slaDeadline,
     },
   });
 
@@ -257,6 +273,83 @@ async function createHandoffTicket(args: {
   });
 
   return { ticket_id: ticket.id, ticket_number: ticket.ticket_number };
+}
+
+const DEFAULT_WELCOME = 'Hi! How can I help you today?';
+
+// GET /api/bot/welcome-message?tenant_id=...&tenant_product_id=...
+// Fetches kb_sources content for tenant_product_id, passes to LLM to generate a friendly starting message (no auth).
+export async function welcomeMessage(req: Request, res: Response): Promise<void> {
+  const tenant_id = typeof req.query.tenant_id === 'string' ? req.query.tenant_id.trim() : '';
+  const tenant_product_id = typeof req.query.tenant_product_id === 'string' ? req.query.tenant_product_id.trim() : '';
+  if (!tenant_product_id) {
+    res.json({ message: DEFAULT_WELCOME });
+    return;
+  }
+  try {
+    const tp = await prisma.tenantProduct.findFirst({
+      where: { id: tenant_product_id, ...(tenant_id ? { tenant_id } : {}) },
+      select: { id: true, name: true },
+    });
+    if (!tp) {
+      res.json({ message: DEFAULT_WELCOME });
+      return;
+    }
+    const sources = await prisma.kbSource.findMany({
+      where: { tenant_product_id, status: 'extracted' },
+      select: { title: true, content_text: true },
+      orderBy: { updated_at: 'desc' },
+      take: 20,
+    });
+    const maxChars = 14_000;
+    let combined = sources
+      .map((s) => {
+        const title = (s.title || 'Source').trim();
+        const text = (s.content_text || '').trim();
+        return title ? `${title}:\n${text}` : text;
+      })
+      .filter(Boolean)
+      .join('\n\n---\n\n');
+    if (combined.length > maxChars) combined = combined.slice(0, maxChars) + '\n\n[... truncated]';
+
+    if (!combined.trim()) {
+      res.json({ message: DEFAULT_WELCOME });
+      return;
+    }
+
+    const client = getOpenAI();
+    if (!client) {
+      res.json({ message: DEFAULT_WELCOME });
+      return;
+    }
+
+    const system =
+      'You are writing the very first message for a support chat widget. Your reply will be shown as the bot\'s opening message. ' +
+      'Write in a friendly, concise way. Do not use markdown or code blocks.';
+
+    const user =
+      `Product/context: ${tp.name || 'Support'}\n\n` +
+      `Using the knowledge base content below, write a short welcome message (2–4 sentences) that:\n` +
+      `1. Says hi and asks how you can help today.\n` +
+      `2. Says something like "Do you have any of these issues?" and then list 4–6 specific topics or problems that the knowledge base can help with, based on the content.\n` +
+      `Use simple bullet points or short lines for the list. Keep the whole message under 250 words.\n\n` +
+      `Knowledge base content:\n\n${combined}`;
+
+    const resp = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.4,
+      max_tokens: 400,
+    });
+    const message = resp.choices?.[0]?.message?.content?.trim() || DEFAULT_WELCOME;
+    res.json({ message });
+  } catch (e) {
+    console.error('welcomeMessage error:', e);
+    res.json({ message: DEFAULT_WELCOME });
+  }
 }
 
 // POST /api/bot/chat

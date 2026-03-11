@@ -36,9 +36,10 @@ export default function PortalChatPage() {
     {
       id: 'welcome',
       from: 'bot',
-      text: 'Hi! I’m your ReWire support bot. Ask me anything about your account, tickets, or product.',
+      text: 'Hi! How can I help you today?',
     },
   ]);
+  const [welcomeLoading, setWelcomeLoading] = useState(true);
   const [error, setError] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const hasWindow = typeof window !== 'undefined';
@@ -47,6 +48,28 @@ export default function PortalChatPage() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (!tenantId) {
+      setWelcomeLoading(false);
+      return;
+    }
+    setWelcomeLoading(true);
+    botApi
+      .welcomeMessage(tenantId, tenantProductId)
+      .then((res) => {
+        const message = typeof res.data?.message === 'string' ? res.data.message.trim() : '';
+        if (message) {
+          setMessages((prev) =>
+            prev.length === 1 && prev[0].id === 'welcome'
+              ? [{ id: 'welcome', from: 'bot', text: message }]
+              : prev
+          );
+        }
+      })
+      .catch(() => {})
+      .finally(() => setWelcomeLoading(false));
+  }, [tenantId, tenantProductId]);
 
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -141,14 +164,17 @@ export default function PortalChatPage() {
     if (pollRef.current) clearInterval(pollRef.current);
     setSessionId(null);
     setEnded(false);
-    setMessages([
-      {
-        id: 'welcome',
-        from: 'bot',
-        text: 'Hi! I’m your ReWire support bot. Ask me anything about your account, tickets, or product.',
-      },
-    ]);
+    setMessages([{ id: 'welcome', from: 'bot', text: 'Hi! How can I help you today?' }]);
     setError('');
+    setWelcomeLoading(true);
+    botApi
+      .welcomeMessage(tenantId || '', tenantProductId)
+      .then((res) => {
+        const message = typeof res.data?.message === 'string' ? res.data.message.trim() : '';
+        if (message) setMessages([{ id: 'welcome', from: 'bot', text: message }]);
+      })
+      .catch(() => {})
+      .finally(() => setWelcomeLoading(false));
     if (hasWindow) {
       window.parent?.postMessage({ type: 'gkt-widget-new-session' }, '*');
     }
@@ -247,11 +273,11 @@ export default function PortalChatPage() {
   return (
     <div
       style={{
-        height: '100%',
-        minHeight: 0,
+        height: '100vh',
+        minHeight: '100vh',
         display: 'flex',
-        alignItems: 'stretch',
-        justifyContent: 'stretch',
+        alignItems: 'flex-end',
+        justifyContent: 'flex-end',
         background: '#020617',
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
         padding: 0,
@@ -307,7 +333,6 @@ export default function PortalChatPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: '#E5E7EB' }}>ReWire Support Bot</span>
-              <span style={{ fontSize: 11, color: '#9CA3AF' }}>Typically replies in under a minute</span>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -499,30 +524,46 @@ export default function PortalChatPage() {
               gap: 8,
             }}
           >
-            {messages.map((m) => (
+            {welcomeLoading && messages.length === 1 && messages[0].id === 'welcome' ? (
               <div
-                key={m.id}
                 style={{
-                  display: 'flex',
-                  justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
+                  alignSelf: 'flex-start',
+                  maxWidth: '80%',
+                  padding: '8px 10px',
+                  borderRadius: 14,
+                  fontSize: 12,
+                  background: 'rgba(15,23,42,0.9)',
+                  color: '#94A3B8',
                 }}
               >
+                Loading…
+              </div>
+            ) : (
+              messages.map((m) => (
                 <div
+                  key={m.id}
                   style={{
-                    maxWidth: '80%',
-                    padding: '8px 10px',
-                    borderRadius: 14,
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                    whiteSpace: 'pre-wrap',
-                    background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
-                    color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                    display: 'flex',
+                    justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
                   }}
                 >
-                  {m.text}
+                  <div
+                    style={{
+                      maxWidth: '80%',
+                      padding: '8px 10px',
+                      borderRadius: 14,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap',
+                      background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
+                      color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                    }}
+                  >
+                    {m.text}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
             {error && (
               <div style={{ fontSize: 11, color: '#FCA5A5', marginTop: 4 }}>
                 {error}

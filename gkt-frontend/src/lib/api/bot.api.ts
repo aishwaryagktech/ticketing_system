@@ -1,6 +1,10 @@
 import apiClient from './client';
 
 export const botApi = {
+  welcomeMessage: (tenant_id: string, tenant_product_id?: string) =>
+    apiClient.get<{ message: string }>('/api/bot/welcome-message', {
+      params: { tenant_id, tenant_product_id },
+    }),
   chat: (args: {
     message: string;
     tenant_id: string;

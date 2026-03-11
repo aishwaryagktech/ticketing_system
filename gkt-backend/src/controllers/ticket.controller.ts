@@ -4,6 +4,12 @@ import { ApiKeyRequest } from '../middleware/apiKey';
 import { AuthRequest } from '../middleware/auth';
 import { getActiveAdapter } from '../ai/provider';
 import { Conversation } from '../../mongo/models/conversation.model';
+import {
+  getResolutionTimeMins,
+  computeSlaDeadline,
+  shouldBeBreached,
+  markBreachedTickets,
+} from '../services/sla.service';
 
 // GET /api/tickets
 export async function listTickets(req: AuthRequest, res: Response): Promise<void> {
@@ -30,6 +36,8 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
   const skip = Math.max(0, q.skip != null ? Number(q.skip) : 0);
 
   try {
+    // Keep sla_breached in sync so list views and stats are accurate
+    await markBreachedTickets();
     const where: any = {
       tenant_id: tenantId,
       ...(tenant_product_id ? { tenant_product_id } : {}),
@@ -79,13 +87,26 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
     return;
   }
   try {
-    const ticket = await prisma.ticket.findFirst({
+    let ticket = await prisma.ticket.findFirst({
       where: { id, tenant_id: tenantId },
       include: { comments: { orderBy: { created_at: 'asc' } } },
     });
     if (!ticket) {
       res.status(404).json({ error: 'Not found' });
       return;
+    }
+    // Sync sla_breached if deadline passed and ticket not resolved/closed
+    const breached = shouldBeBreached(
+      ticket.sla_deadline,
+      ticket.status,
+      ticket.sla_breached
+    );
+    if (breached && !ticket.sla_breached) {
+      ticket = await prisma.ticket.update({
+        where: { id },
+        data: { sla_breached: true },
+        include: { comments: { orderBy: { created_at: 'asc' } } },
+      });
     }
     res.json(ticket);
   } catch (e) {
@@ -181,11 +202,27 @@ export async function createTicket(req: ApiKeyRequest, res: Response): Promise<v
       return 'p3';
     })();
 
+    const effectiveTenantProductId = tenant_product_id ? String(tenant_product_id) : null;
+    let slaDeadline: Date | null = null;
+    try {
+      const resolutionMins = await getResolutionTimeMins(
+        effectiveProductId,
+        effectiveTenantProductId,
+        normalizedPriority
+      );
+      if (resolutionMins != null && resolutionMins > 0) {
+        const createdAt = new Date();
+        slaDeadline = computeSlaDeadline(createdAt, resolutionMins);
+      }
+    } catch (slaErr) {
+      console.warn('createTicket: SLA policy lookup failed (continuing without SLA):', (slaErr as Error).message);
+    }
+
     const ticket = await prisma.ticket.create({
       data: {
         ticket_number: ticketNumber,
         product_id: effectiveProductId,
-        tenant_product_id: tenant_product_id ? String(tenant_product_id) : null,
+        tenant_product_id: effectiveTenantProductId,
         subject: String(subject),
         description: String(description),
         created_by: email ? String(email) : 'public',
@@ -199,6 +236,7 @@ export async function createTicket(req: ApiKeyRequest, res: Response): Promise<v
         sentiment: sentiment as any,
         sentiment_trend: sentimentTrend,
         tenant_id: tenant_id ? String(tenant_id) : null,
+        sla_deadline: slaDeadline,
       },
     });
     res.status(201).json({
@@ -264,16 +302,31 @@ export async function assignTicket(req: AuthRequest, res: Response): Promise<voi
   }
 
   try {
-    const t = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId } });
-    if (!t) {
-      res.status(404).json({ error: 'Not found' });
+    // Try to atomically claim the ticket only if it is currently unassigned
+    const result = await prisma.ticket.updateMany({
+      where: { id, tenant_id: tenantId, assigned_to: null },
+      data: { assigned_to: userId },
+    });
+
+    if (result.count === 0) {
+      // Either ticket does not exist for this tenant or it was already assigned
+      const existing = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId } });
+      if (!existing) {
+        res.status(404).json({ error: 'Not found' });
+        return;
+      }
+
+      if (existing.assigned_to && existing.assigned_to !== userId) {
+        res.status(409).json({ error: 'already_assigned' });
+        return;
+      }
+
+      // Ticket is already assigned to this user; return current state
+      res.json(existing);
       return;
     }
 
-    const updated = await prisma.ticket.update({
-      where: { id },
-      data: { assigned_to: userId },
-    });
+    const updated = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId } });
     res.json(updated);
   } catch (e) {
     console.error('assignTicket error:', e);
