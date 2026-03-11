@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { listUserTickets, listTicketMessages, createTicketMessage, supportSuggest } from '../controllers/widgetPublic.controller';
+import { listUserTickets, listTicketMessages, createTicketMessage, supportSuggest, createTicketFromWidget } from '../controllers/widgetPublic.controller';
 
 const router = Router();
 
@@ -8,6 +8,7 @@ router.get('/tickets', listUserTickets);
 router.get('/tickets/:id/messages', listTicketMessages);
 router.post('/tickets/:id/messages', createTicketMessage);
 router.post('/support-suggest', supportSuggest);
+router.post('/tickets', createTicketFromWidget);
 
 export default router;
 

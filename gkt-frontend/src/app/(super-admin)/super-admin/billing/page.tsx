@@ -11,7 +11,7 @@ function toUsd(inr: number) { return Math.round((inr / USD_TO_INR) * 100) / 100;
 function clamp0(v: number) { return Math.max(0, v); }
 
 const emptyForm = () => ({
-  name: '', max_agents: 0, max_tickets_per_month: 0,
+  name: '', max_agents: 0, max_tickets_per_month: 0, max_products: 0,
   price_usd: 0, price_inr: 0,
   overage_per_ticket_usd: 0, overage_per_ticket_inr: 0,
 });
@@ -116,6 +116,7 @@ export default function BillingPage() {
       name: plan.name,
       max_agents: plan.max_agents,
       max_tickets_per_month: plan.max_tickets_per_month,
+      max_products: plan.max_products ?? 0,
       price_usd: Number(plan.price_usd),
       price_inr: Number(plan.price_inr),
       overage_per_ticket_usd: Number(plan.overage_per_ticket_usd),
@@ -161,7 +162,7 @@ export default function BillingPage() {
         <input style={{ ...inputStyle, borderColor: hasNameError ? '#EF4444' : borderColor }} value={values.name} onChange={e => setValues(f => ({ ...f, name: e.target.value }))} required placeholder="Starter" />
         {hasNameError && <p style={{ color: '#EF4444', fontSize: '12px', fontWeight: 500, margin: '6px 0 0' }}>⚠️ {nameError}</p>}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
         <div>
           <label style={{ fontSize: '13px', fontWeight: 600, color: textSecondary, marginBottom: '6px', display: 'block' }}>Max Agents</label>
           <input type="number" min="0" style={inputStyle} value={values.max_agents} onChange={e => setValues(f => ({ ...f, max_agents: clamp0(Number(e.target.value)) }))} required />
@@ -169,6 +170,10 @@ export default function BillingPage() {
         <div>
           <label style={{ fontSize: '13px', fontWeight: 600, color: textSecondary, marginBottom: '6px', display: 'block' }}>Max Tickets/mo</label>
           <input type="number" min="0" style={inputStyle} value={values.max_tickets_per_month} onChange={e => setValues(f => ({ ...f, max_tickets_per_month: clamp0(Number(e.target.value)) }))} required />
+        </div>
+        <div>
+          <label style={{ fontSize: '13px', fontWeight: 600, color: textSecondary, marginBottom: '6px', display: 'block' }}>Max Products</label>
+          <input type="number" min="0" style={inputStyle} value={values.max_products} onChange={e => setValues(f => ({ ...f, max_products: clamp0(Number(e.target.value)) }))} placeholder="0 = unlimited" title="Number of tenant products allowed per tenant (0 = unlimited)" />
         </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -253,6 +258,7 @@ export default function BillingPage() {
                 {[
                   { label: 'Max Agents', value: plan.max_agents },
                   { label: 'Max Tickets/mo', value: plan.max_tickets_per_month.toLocaleString() },
+                  { label: 'Max Products', value: (plan.max_products ?? 0) === 0 ? 'Unlimited' : String(plan.max_products) },
                   { label: 'Overage / ticket', value: `$${Number(plan.overage_per_ticket_usd)} / ₹${Number(plan.overage_per_ticket_inr)}` },
                 ].map(row => (
                   <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>

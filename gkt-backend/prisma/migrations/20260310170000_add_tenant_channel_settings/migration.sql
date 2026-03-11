@@ -1,3 +1,6 @@
+-- Ensure UUID extension exists (required for shadow DB and fresh installs)
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 CREATE TABLE IF NOT EXISTS "tenant_channel_settings" (
   "id" TEXT PRIMARY KEY DEFAULT uuid_generate_v4(),
   "tenant_id" TEXT NOT NULL UNIQUE,

@@ -19,4 +19,13 @@ export const superAdminApi = {
 
   // Platform Analytics
   getPlatformStats: () => apiClient.get('/api/super-admin/stats'),
+
+  // Tenant products (all tenants, dashboard)
+  getTenantProducts: () => apiClient.get('/api/super-admin/tenant-products'),
+  getTenantProductStats: () => apiClient.get('/api/super-admin/tenant-products/stats'),
+
+  // Tickets (all tickets, dashboard)
+  getTickets: (params?: { status?: string; tenant_product_id?: string; sla_breached?: string; take?: number; skip?: number }) =>
+    apiClient.get('/api/super-admin/tickets', { params }),
+  getTicketStats: () => apiClient.get('/api/super-admin/tickets/stats'),
 };

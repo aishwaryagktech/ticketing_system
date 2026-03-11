@@ -9,8 +9,8 @@ export default function PublicSupportFormPage() {
   const search = useSearchParams();
   const tenantId = search.get('tenant_id') || null;
   const tenantProductId = search.get('tenant_product_id') || null;
-  // Back-compat: older embeds pass `product_id`
-  const productId = tenantProductId || search.get('product_id') || null;
+  // `product_id` is the parent product; keep tenant_product_id separate
+  const productId = search.get('product_id') || null;
   const [name, setName] = useState('');
   const [email, setEmail] = useState('aishh2305@gmail.com');
   const [subject, setSubject] = useState('');
@@ -79,11 +79,10 @@ export default function PublicSupportFormPage() {
     setIsSubmitting(true);
     setResult(null);
     try {
-      const res = await fetch(`${API_BASE}/api/public/tickets`, {
+      const res = await fetch(`${API_BASE}/api/widget/tickets`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': process.env.NEXT_PUBLIC_PUBLIC_API_KEY || '',
         },
         body: JSON.stringify({
           name,
@@ -109,8 +108,8 @@ export default function PublicSupportFormPage() {
         ok: true,
         message:
           data.ticket_number
-            ? `Ticket ${data.ticket_number} has been created. Our team will get back to you.`
-            : 'Thank you! Your request has been submitted to a human agent.',
+            ? `Ticket ${data.ticket_number} has been created. A human agent will contact you via email.`
+            : 'Thank you! Your request has been submitted to a human agent. They will contact you via email.',
       });
       setName('');
       setEmail('');

@@ -4,6 +4,8 @@ import { AuthRequest } from '../middleware/auth';
 import { getActiveAdapter } from '../ai/provider';
 import { Conversation } from '../../mongo/models/conversation.model';
 import { getIO } from '../config/socket';
+import { sendEmail } from '../services/email.service';
+import { decryptPII } from '../utils/encrypt';
 
 // GET /api/tickets/:id/comments
 export async function listComments(req: AuthRequest, res: Response): Promise<void> {
@@ -49,7 +51,17 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
   try {
     const ticket = await prisma.ticket.findFirst({
       where: { id, tenant_id: tenantId },
-      select: { id: true, product_id: true, sentiment: true, tenant_id: true, tenant_product_id: true },
+      select: {
+        id: true,
+        product_id: true,
+        sentiment: true,
+        tenant_id: true,
+        tenant_product_id: true,
+        source: true,
+        created_by: true,
+        subject: true,
+        ticket_number: true,
+      },
     });
     if (!ticket) {
       res.status(404).json({ error: 'Not found' });
@@ -139,7 +151,47 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
       );
     }
 
-    res.status(201).json(comment);
+    // For web_form tickets, non-internal comments are sent as emails: From (verified sender) → To (requester).
+    let emailSent = false;
+    if (ticket.source === 'web_form' && is_internal !== true && ticket.created_by) {
+      try {
+        let agentEmail: string | null = null;
+        let agentName: string | null = null;
+        try {
+          const agentUser = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { email: true, first_name: true, last_name: true },
+          });
+          if (agentUser?.email) {
+            try {
+              agentEmail = decryptPII(agentUser.email);
+            } catch {
+              agentEmail = agentUser.email;
+            }
+          }
+          const fullName = [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(' ').trim();
+          agentName = fullName || null;
+        } catch {
+          // ignore lookup failures
+        }
+
+        // Send mail: To = requester (ticket.created_by). From = SENDGRID_FROM_EMAIL (verified).
+        // Reply-To = agent so replies go to the agent.
+        await sendEmail({
+          to: ticket.created_by,
+          subject: `Re: ${ticket.ticket_number} - ${ticket.subject}`,
+          text: body.trim(),
+          replyTo: agentEmail || undefined,
+          fromName: agentName || 'Support',
+          // fromEmail omitted so SendGrid uses SENDGRID_FROM_EMAIL (must be verified in SendGrid)
+        });
+        emailSent = true;
+      } catch (emailErr) {
+        console.warn('createComment: failed to send email reply (continuing):', (emailErr as Error).message);
+      }
+    }
+
+    res.status(201).json({ ...comment, email_sent: emailSent });
   } catch (e) {
     console.error('createComment error:', e);
     res.status(500).json({ error: 'Failed to create comment' });

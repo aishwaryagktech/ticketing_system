@@ -10,6 +10,7 @@ import {
   shouldBeBreached,
   markBreachedTickets,
 } from '../services/sla.service';
+import { decryptPII } from '../utils/encrypt';
 
 // GET /api/tickets
 export async function listTickets(req: AuthRequest, res: Response): Promise<void> {
@@ -89,7 +90,15 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
   try {
     let ticket = await prisma.ticket.findFirst({
       where: { id, tenant_id: tenantId },
-      include: { comments: { orderBy: { created_at: 'asc' } } },
+      include: {
+        comments: { orderBy: { created_at: 'asc' } },
+        product: {
+          select: {
+            email_sender_address: true,
+            email_sender_name: true,
+          },
+        },
+      },
     });
     if (!ticket) {
       res.status(404).json({ error: 'Not found' });
@@ -108,7 +117,29 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
         include: { comments: { orderBy: { created_at: 'asc' } } },
       });
     }
-    res.json(ticket);
+    // Enrich with resolved agent email for web_form flows (From: in composer)
+    let agentEmailResolved: string | null = null;
+    if (ticket.assigned_to) {
+      try {
+        const agent = await prisma.user.findUnique({
+          where: { id: ticket.assigned_to },
+          select: { email: true },
+        });
+        if (agent?.email) {
+          try {
+            agentEmailResolved = decryptPII(agent.email);
+          } catch {
+            agentEmailResolved = agent.email;
+          }
+        }
+      } catch {
+        // ignore lookup failures
+      }
+    }
+    res.json({
+      ...ticket,
+      agent_email: agentEmailResolved,
+    });
   } catch (e) {
     console.error('getTicket error:', e);
     res.status(500).json({ error: 'Failed to fetch ticket' });
@@ -463,7 +494,17 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
   try {
     const ticket = await prisma.ticket.findFirst({
       where: { id, tenant_id: tenantId },
-      select: { id: true, tenant_id: true, tenant_product_id: true, description: true, subject: true, created_at: true },
+      select: {
+        id: true,
+        tenant_id: true,
+        tenant_product_id: true,
+        description: true,
+        subject: true,
+        created_at: true,
+        source: true,
+        product_id: true,
+        created_by: true,
+      },
     });
     if (!ticket) {
       res.status(404).json({ error: 'Not found' });
@@ -493,7 +534,27 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
       }
     }
 
-    // Fallback for non-bot tickets: basic conversation from description only
+    // Fallback for non-bot tickets.
+    if (ticket.source === 'web_form') {
+      // For web_form tickets, build the thread from non-internal TicketComments (email thread).
+      const comments = await prisma.ticketComment.findMany({
+        where: { ticket_id: ticket.id, is_internal: false },
+        orderBy: { created_at: 'asc' },
+      });
+
+      const createdByLower = (ticket.created_by || '').toLowerCase();
+      const msgs = comments.map((c) => ({
+        id: c.id,
+        from: (c.author_id || '').toLowerCase() === createdByLower ? ('user' as const) : ('agent' as const),
+        text: c.body,
+        created_at: c.created_at,
+      }));
+
+      res.json({ messages: msgs });
+      return;
+    }
+
+    // For other sources, basic conversation from description only
     let baseText = ticket.description || ticket.subject;
     if (baseText) {
       const marker = '\n---\nChat transcript\n---';

@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store';
 
 const navItems = [
   { href: '/super-admin/products', label: 'Products', icon: '🏢' },
+  { href: '/super-admin/tickets', label: 'Tickets', icon: '🎫' },
   { href: '/super-admin/billing', label: 'Billing', icon: '💳' },
   { href: '/super-admin/feature-flags', label: 'Feature Flags', icon: '🚩' },
   { href: '/api-keys', label: 'API Keys', icon: '🔑' },

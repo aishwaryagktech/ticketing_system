@@ -4,6 +4,8 @@ import { Conversation } from '../../mongo/models/conversation.model';
 import { getIO } from '../config/socket';
 import { getActiveAdapter } from '../ai/provider';
 import { embedQuery, searchKb } from '../services/embedding.service';
+import { getResolutionTimeMins, computeSlaDeadline } from '../services/sla.service';
+import { sendEmail } from '../services/email.service';
 
 // GET /api/widget/tickets?tenant_id=&user_email=
 export async function listUserTickets(req: Request, res: Response): Promise<void> {
@@ -267,7 +269,8 @@ export async function createTicketMessage(req: Request, res: Response): Promise<
 // POST /api/widget/support-suggest
 // Public endpoint for webform/widget to get an AI fix suggestion and priority without API key.
 export async function supportSuggest(req: Request, res: Response): Promise<void> {
-  const { tenant_id, tenant_product_id, product_id, user_email, subject, description } = (req.body as any) || {};
+  const { tenant_id, tenant_product_id, product_id, user_email, subject, description } =
+    (req.body as any) || {};
 
   const tenantId = String(tenant_id || '').trim();
   const tenantProductId = String(tenant_product_id || '').trim();
@@ -279,25 +282,39 @@ export async function supportSuggest(req: Request, res: Response): Promise<void>
     return;
   }
 
-  // We require at least a product context (product_id or tenant_product_id) to pick the right AI config.
-  if (!productIdFromBody && !tenantProductId) {
-    res.status(400).json({ error: 'product_id or tenant_product_id is required' });
+  // We need the product_id so we can pick the correct AI config.
+  if (!productIdFromBody) {
+    res.status(400).json({ error: 'product_id is required' });
     return;
   }
 
-  let effectiveProductId: string | null = productIdFromBody || null;
-
   try {
+    // Validate or derive a safe product_id that exists in the DB.
+    let effectiveProductId: string | null = null;
+
+    if (productIdFromBody) {
+      const product = await prisma.product.findUnique({
+        where: { id: productIdFromBody },
+        select: { id: true },
+      });
+      if (product) {
+        effectiveProductId = product.id;
+      }
+    }
+
+    // Fallback: try to infer product_id from SLA policies for this tenant_product_id
     if (!effectiveProductId && tenantProductId) {
-      const tp = await prisma.tenantProduct.findUnique({
-        where: { id: tenantProductId },
+      const sla = await prisma.slaPolicy.findFirst({
+        where: { tenant_product_id: tenantProductId },
         select: { product_id: true },
       });
-      effectiveProductId = tp?.product_id || null;
+      if (sla) {
+        effectiveProductId = sla.product_id;
+      }
     }
 
     if (!effectiveProductId) {
-      res.status(400).json({ error: 'Unable to resolve product context for AI' });
+      res.status(400).json({ error: 'Unable to resolve product context for AI (invalid product_id)' });
       return;
     }
 
@@ -391,6 +408,183 @@ export async function supportSuggest(req: Request, res: Response): Promise<void>
   } catch (e) {
     console.error('widget supportSuggest error:', e);
     res.status(500).json({ error: 'Failed to generate AI suggestion' });
+  }
+}
+
+// POST /api/widget/tickets
+// Create a ticket from a web form / widget, with AI classification + SLA,
+// and send an email confirmation to the user. No API key required.
+export async function createTicketFromWidget(req: Request, res: Response): Promise<void> {
+  const {
+    name,
+    email,
+    subject,
+    description,
+    priority,
+    tenant_id,
+    tenant_product_id,
+    product_id,
+  } = (req.body as any) || {};
+
+  const tenantId = String(tenant_id || '').trim() || null;
+  const tenantProductId = String(tenant_product_id || '').trim() || null;
+  const productIdFromBody = String(product_id || '').trim() || null;
+
+  if (!subject || !description) {
+    res.status(400).json({ error: 'subject and description are required' });
+    return;
+  }
+  if (!email) {
+    res.status(400).json({ error: 'email is required' });
+    return;
+  }
+
+  if (!productIdFromBody) {
+    res.status(400).json({ error: 'product_id is required' });
+    return;
+  }
+
+  try {
+    // Validate or derive a safe product_id that exists in the DB.
+    let effectiveProductId: string | null = null;
+
+    if (productIdFromBody) {
+      const product = await prisma.product.findUnique({
+        where: { id: productIdFromBody },
+        select: { id: true },
+      });
+      if (product) {
+        effectiveProductId = product.id;
+      }
+    }
+
+    // Fallback: try to infer product_id from SLA policies for this tenant_product_id
+    if (!effectiveProductId && tenantProductId) {
+      const sla = await prisma.slaPolicy.findFirst({
+        where: { tenant_product_id: tenantProductId },
+        select: { product_id: true },
+      });
+      if (sla) {
+        effectiveProductId = sla.product_id;
+      }
+    }
+
+    if (!effectiveProductId) {
+      res.status(400).json({ error: 'Unable to resolve product context for ticket (invalid product_id)' });
+      return;
+    }
+
+    const ticketNumber =
+      'TKT-' +
+      Date.now().toString(36).toUpperCase() +
+      '-' +
+      Math.random().toString(36).slice(2, 6).toUpperCase();
+
+    const textForAi = `${subject}\n\n${description}`;
+
+    let category: string | null = null;
+    let subCategory: string | null = null;
+    let aiPriority: string | null = null;
+    let department: string | null = null;
+    let aiConfidence: number | null = null;
+    let sentiment: string | null = null;
+    let sentimentTrend: string | null = null;
+
+    try {
+      const adapter = await getActiveAdapter(effectiveProductId);
+      const [cls, snt] = await Promise.all([
+        adapter.classify(textForAi),
+        adapter.detectSentiment(textForAi),
+      ]);
+
+      category = cls.category || null;
+      subCategory = cls.sub_category || null;
+      aiPriority = (cls.priority || '').toLowerCase();
+      aiConfidence = typeof cls.confidence === 'number' ? cls.confidence : null;
+
+      const catLower = (category || '').toLowerCase();
+      if (catLower === 'technical') department = 'Engineering';
+      else if (catLower === 'billing') department = 'Finance';
+      else if (catLower === 'course') department = 'Academics';
+      else if (catLower === 'mentor') department = 'Mentorship';
+      else if (catLower === 'hardware') department = 'IT Operations';
+      else if (catLower === 'access') department = 'Access Management';
+
+      sentiment = (snt.sentiment || '').toLowerCase() || null;
+      sentimentTrend = snt.trend || null;
+    } catch (aiErr) {
+      console.warn('createTicketFromWidget: AI enrichment failed (continuing without AI):', (aiErr as Error).message);
+    }
+
+    const normalizedPriority = (function () {
+      const explicit = typeof priority === 'string' ? priority.toLowerCase() : null;
+      const fromAi = aiPriority;
+      const val = explicit || fromAi;
+      if (val === 'p1' || val === 'p2' || val === 'p3' || val === 'p4') return val;
+      return 'p3';
+    })();
+
+    const effectiveTenantProductId = tenantProductId || null;
+    let slaDeadline: Date | null = null;
+    try {
+      const resolutionMins = await getResolutionTimeMins(
+        effectiveProductId,
+        effectiveTenantProductId,
+        normalizedPriority
+      );
+      if (resolutionMins != null && resolutionMins > 0) {
+        const createdAt = new Date();
+        slaDeadline = computeSlaDeadline(createdAt, resolutionMins);
+      }
+    } catch (slaErr) {
+      console.warn('createTicketFromWidget: SLA policy lookup failed (continuing without SLA):', (slaErr as Error).message);
+    }
+
+    const ticket = await prisma.ticket.create({
+      data: {
+        ticket_number: ticketNumber,
+        product_id: effectiveProductId,
+        tenant_product_id: effectiveTenantProductId,
+        tenant_id: tenantId,
+        subject: String(subject),
+        description: String(description),
+        created_by: String(email),
+        priority: normalizedPriority as any,
+        source: 'web_form',
+        user_type: 'individual',
+        category: category,
+        sub_category: subCategory,
+        department: department,
+        ai_confidence: aiConfidence,
+        sentiment: sentiment as any,
+        sentiment_trend: sentimentTrend,
+        sla_deadline: slaDeadline,
+      },
+    });
+
+    // Fire-and-forget email confirmation to the user
+    sendEmail({
+      to: email,
+      subject: `We received your support request (${ticket.ticket_number})`,
+      text:
+        `Hi${name ? ' ' + name : ''},\n\n` +
+        `Thanks for reaching out. We've created a ticket for your request.\n\n` +
+        `Ticket: ${ticket.ticket_number}\n` +
+        `Subject: ${subject}\n` +
+        `Priority: ${normalizedPriority.toUpperCase()}\n\n` +
+        `A human support agent will get in touch with you via email on this thread.\n\n` +
+        `Best,\nSupport team`,
+    }).catch(() => {
+      // Logged inside sendEmail
+    });
+
+    res.status(201).json({
+      ticket_id: ticket.id,
+      ticket_number: ticket.ticket_number,
+    });
+  } catch (e) {
+    console.error('createTicketFromWidget error:', e);
+    res.status(500).json({ error: 'Failed to create ticket' });
   }
 }
 

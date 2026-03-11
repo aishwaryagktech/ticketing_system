@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { ticketApi } from '@/lib/api/ticket.api';
+import { onboardingApi } from '@/lib/api/onboarding.api';
 import { useAuthStore } from '@/store/auth.store';
 
 type Ticket = any;
@@ -30,6 +31,8 @@ export default function AgentTicketDetailPage() {
   const [tab, setTab] = useState<'conversation' | 'details' | 'sla' | 'escalations'>('conversation');
   const pollRef = useRef<NodeJS.Timeout | null>(null);
   const hasMarkedOpenRef = useRef(false);
+  const [nextEscalationAgents, setNextEscalationAgents] = useState<Array<{ id: string; first_name?: string | null; last_name?: string | null; email?: string | null; role?: string | null }>>([]);
+  const [nextEscalationLoading, setNextEscalationLoading] = useState(false);
 
   const isReadOnly = (searchParams.get('readonly') || '').toLowerCase() === '1' || (searchParams.get('readonly') || '').toLowerCase() === 'true';
 
@@ -40,6 +43,42 @@ export default function AgentTicketDetailPage() {
 
   const canEscalateTo2 = user?.role === 'l1_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
   const canEscalateTo3 = user?.role === 'l2_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
+
+  const nextEscalationRole = useMemo(() => {
+    const r = user?.role;
+    if (r === 'l1_agent') return { role: 'l2_agent' as const, label: 'L2' };
+    if (r === 'l2_agent') return { role: 'l3_agent' as const, label: 'L3' };
+    return null;
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (!ticket?.tenant_product_id || !nextEscalationRole) {
+      setNextEscalationAgents([]);
+      return;
+    }
+    let cancelled = false;
+    setNextEscalationLoading(true);
+    onboardingApi
+      .getAgents()
+      .then((list: any[]) => {
+        if (cancelled) return;
+        const tpId = ticket.tenant_product_id;
+        const filtered = (Array.isArray(list) ? list : []).filter(
+          (a: any) =>
+            a.role === nextEscalationRole.role &&
+            Array.isArray(a.assigned_products) &&
+            a.assigned_products.some((p: any) => p && p.id === tpId)
+        );
+        setNextEscalationAgents(filtered);
+      })
+      .catch(() => {
+        if (!cancelled) setNextEscalationAgents([]);
+      })
+      .finally(() => {
+        if (!cancelled) setNextEscalationLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [ticket?.tenant_product_id, nextEscalationRole?.role]);
 
   const load = async () => {
     setLoading(true);
@@ -93,7 +132,8 @@ export default function AgentTicketDetailPage() {
 
   // Poll conversation every 5s while on "conversation" tab
   useEffect(() => {
-    if (tab !== 'conversation') {
+    const isBotHandoff = ticket && String(ticket.source || '').toLowerCase() === 'bot_handoff';
+    if (tab !== 'conversation' || !isBotHandoff) {
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
@@ -126,7 +166,7 @@ export default function AgentTicketDetailPage() {
         pollRef.current = null;
       }
     };
-  }, [id, tab]);
+  }, [id, tab, ticket?.source]);
 
   const addComment = async () => {
     if (isReadOnly) return;
@@ -135,10 +175,17 @@ export default function AgentTicketDetailPage() {
     setSaving(true);
     setError('');
     try {
-      await ticketApi.addComment(id, text, isInternal);
+      const res = await ticketApi.addComment(id, text, isInternal);
+      const data = res?.data as { email_sent?: boolean } | undefined;
       setReply('');
       setIsInternal(false);
       await load();
+      if (isWebForm && data?.email_sent === true) {
+        setError('');
+        // Optional: show success toast; for now rely on thread refresh
+      } else if (isWebForm && data?.email_sent === false) {
+        setError('Comment saved, but email could not be sent. Check SendGrid config and logs.');
+      }
     } catch (e: any) {
       setError(e?.message || 'Failed to add comment');
     } finally {
@@ -230,6 +277,13 @@ export default function AgentTicketDetailPage() {
       </div>
     );
   }
+
+  const isWebForm = String(ticket.source || '').toLowerCase() === 'web_form';
+  const fromAddress =
+    (isWebForm && (ticket.agent_email as string | undefined)) ||
+    (isWebForm && (ticket.product?.email_sender_address as string | undefined)) ||
+    (user?.email as string | undefined) ||
+    '—';
 
   const chip = (label: string, value: string, bg: string, fg: string) => (
     <span
@@ -365,6 +419,32 @@ export default function AgentTicketDetailPage() {
                   </div>
                 </div>
               )}
+
+              {nextEscalationRole && (
+                <div style={{ padding: 10, borderRadius: 14, border: '1px solid rgba(148,163,184,0.22)', background: 'rgba(2,6,23,0.55)' }}>
+                  <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 6 }}>
+                    Next escalation: {nextEscalationRole.label} agents
+                  </div>
+                  {!ticket?.tenant_product_id ? (
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                      Link ticket to a product to see agents for this product.
+                    </div>
+                  ) : nextEscalationLoading ? (
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>Loading…</div>
+                  ) : nextEscalationAgents.length === 0 ? (
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                      No {nextEscalationRole.label} agents assigned to this product.
+                    </div>
+                  ) : (
+                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: '#E5E7EB', lineHeight: 1.6 }}>
+                      {nextEscalationAgents.map((a) => {
+                        const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
+                        return <li key={a.id}>{name}</li>;
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -398,7 +478,29 @@ export default function AgentTicketDetailPage() {
             </div>
 
             {tab === 'conversation' && (
-              <>
+            <>
+                {isWebForm && ticket.description && (
+                  <div
+                    style={{
+                      padding: 12,
+                      borderBottom: '1px solid rgba(148,163,184,0.25)',
+                      background: 'rgba(15,23,42,0.9)',
+                    }}
+                  >
+                    <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 800, marginBottom: 4 }}>
+                      Original request
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: '#E5E7EB',
+                        whiteSpace: 'pre-wrap',
+                      }}
+                    >
+                      {ticket.description}
+                    </div>
+                  </div>
+                )}
                 <div
                   ref={scrollRef}
                   style={{
@@ -469,19 +571,72 @@ export default function AgentTicketDetailPage() {
                 )}
 
                 {showReplyArea && (
-                  <div style={{ padding: 12, borderTop: '1px solid rgba(148,163,184,0.2)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <div
+                    style={{
+                      padding: 12,
+                      borderTop: '1px solid rgba(148,163,184,0.2)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                    }}
+                  >
+                    {isWebForm && (
+                      <div
+                        style={{
+                          borderRadius: 12,
+                          border: '1px solid rgba(148,163,184,0.35)',
+                          background: '#020617',
+                          padding: 10,
+                          fontSize: 12,
+                          color: '#E5E7EB',
+                          display: 'grid',
+                          gridTemplateColumns: '56px minmax(0, 1fr)',
+                          rowGap: 4,
+                          columnGap: 8,
+                        }}
+                      >
+                        <div style={{ color: '#94A3B8', fontWeight: 700 }}>To</div>
+                        <div style={{ fontWeight: 600 }}>{ticket.created_by || '—'}</div>
+                        <div style={{ color: '#94A3B8', fontWeight: 700 }}>From</div>
+                        <div style={{ fontWeight: 600 }}>{fromAddress}</div>
+                        <div style={{ color: '#94A3B8', fontWeight: 700 }}>Subject</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {`Re: ${ticket.ticket_number} - ${ticket.subject}`}
+                        </div>
+                      </div>
+                    )}
+
                     <textarea
                       value={reply}
                       onChange={(e) => setReply(e.target.value)}
-                      rows={3}
-                      placeholder="Write a reply or internal note…"
-                      style={{ width: '100%', padding: 10, borderRadius: 12, border: '1px solid rgba(148,163,184,0.25)', background: '#020617', color: '#E5E7EB', fontSize: 12, resize: 'vertical' }}
+                      rows={4}
+                      placeholder={isWebForm ? 'Draft an email reply to the requester…' : 'Write a reply or internal note…'}
+                      style={{
+                        width: '100%',
+                        padding: 10,
+                        borderRadius: 12,
+                        border: '1px solid rgba(148,163,184,0.25)',
+                        background: '#020617',
+                        color: '#E5E7EB',
+                        fontSize: 12,
+                        resize: 'vertical',
+                      }}
                     />
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94A3B8' }}>
-                        <input type="checkbox" checked={isInternal} onChange={(e) => setIsInternal(e.target.checked)} />
-                        Internal note
-                      </label>
+                      {!isWebForm ? (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94A3B8' }}>
+                          <input
+                            type="checkbox"
+                            checked={isInternal}
+                            onChange={(e) => setIsInternal(e.target.checked)}
+                          />
+                          Internal note
+                        </label>
+                      ) : (
+                        <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                          This reply will be sent as an email to the requester.
+                        </div>
+                      )}
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         {showResolvedComplete && (
                           <>
@@ -521,8 +676,22 @@ export default function AgentTicketDetailPage() {
                             </button>
                           </>
                         )}
-                        <button type="button" onClick={addComment} disabled={saving} style={{ padding: '9px 14px', borderRadius: 999, border: 'none', background: '#FACC15', color: '#0F172A', cursor: 'pointer', fontSize: 12, fontWeight: 950 }}>
-                          Send
+                        <button
+                          type="button"
+                          onClick={addComment}
+                          disabled={saving}
+                          style={{
+                            padding: '9px 14px',
+                            borderRadius: 999,
+                            border: 'none',
+                            background: '#FACC15',
+                            color: '#0F172A',
+                            cursor: 'pointer',
+                            fontSize: 12,
+                            fontWeight: 950,
+                          }}
+                        >
+                          {isWebForm ? 'Send email' : 'Send'}
                         </button>
                       </div>
                     </div>
@@ -581,7 +750,28 @@ export default function AgentTicketDetailPage() {
                 <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 900, marginBottom: 10 }}>Escalations</div>
                 <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)', fontSize: 12 }}>
                   <div style={{ color: '#E5E7EB', fontWeight: 900 }}>Current level: L{Number(ticket.escalation_level || 0)}</div>
-                  <div style={{ marginTop: 6, color: '#94A3B8' }}>
+                  {nextEscalationRole && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ color: '#94A3B8', fontWeight: 800, marginBottom: 6 }}>
+                        {nextEscalationRole.label} agents (next in line for this product)
+                      </div>
+                      {ticket?.tenant_product_id ? (
+                        nextEscalationAgents.length === 0 ? (
+                          <div style={{ color: '#94A3B8' }}>No {nextEscalationRole.label} agents assigned to this product.</div>
+                        ) : (
+                          <ul style={{ margin: 0, paddingLeft: 16, color: '#E5E7EB', lineHeight: 1.8 }}>
+                            {nextEscalationAgents.map((a) => {
+                              const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
+                              return <li key={a.id}>{name}</li>;
+                            })}
+                          </ul>
+                        )
+                      ) : (
+                        <div style={{ color: '#94A3B8' }}>Link ticket to a product to see escalation agents.</div>
+                      )}
+                    </div>
+                  )}
+                  <div style={{ marginTop: 12, color: '#94A3B8' }}>
                     Escalation history (manual + auto reasons) will appear here once we add audit logging.
                   </div>
                 </div>

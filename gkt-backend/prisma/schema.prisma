@@ -470,6 +470,7 @@ model BillingPlan {
   name                     String
   max_agents               Int
   max_tickets_per_month    Int
+  max_products             Int      @default(0) // 0 = unlimited tenant products per tenant
   price_inr                Decimal
   price_usd                Decimal
   overage_per_ticket_inr   Decimal  @default(0)

@@ -2516,8 +2516,9 @@ export default function TenantDashboardPage() {
   const [resetAgentInfo, setResetAgentInfo] = useState('');
 
   // Plan state
-  const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; price_usd: unknown }>>([]);
+  const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; max_products: number; price_usd: unknown }>>([]);
   const [plansLoading, setPlansLoading] = useState(false);
+  const [plansSaving, setPlansSaving] = useState(false);
   const [plansError, setPlansError] = useState('');
   const [showPlansModal, setShowPlansModal] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
@@ -2525,6 +2526,8 @@ export default function TenantDashboardPage() {
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [peopleFirstName, setPeopleFirstName] = useState('');
   const [peopleLastName, setPeopleLastName] = useState('');
+  const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
+  const [peoplePassword, setPeoplePassword] = useState('');
   const [configurationStatus, setConfigurationStatus] = useState<ConfigurationStatus | null>(null);
   const [configStatusLoading, setConfigStatusLoading] = useState(false);
   const [configProductId, setConfigProductId] = useState<string | null>(null);
@@ -2573,6 +2576,7 @@ export default function TenantDashboardPage() {
             name: pl.name,
             max_agents: pl.max_agents,
             max_tickets_per_month: pl.max_tickets_per_month,
+            max_products: typeof pl.max_products === 'number' ? pl.max_products : 0,
             price_usd: pl.price_usd,
           }))
         );
@@ -2623,6 +2627,24 @@ export default function TenantDashboardPage() {
   const accentChipBg = isDark ? 'rgba(34, 197, 94, 0.14)' : '#DCFCE7';
   const accentChipText = isDark ? '#4ADE80' : '#166534';
   const inputBg = isDark ? '#020617' : '#FFFFFF';
+
+  const currentPlan = selectedPlanId ? plans.find((p) => p.id === selectedPlanId) : null;
+  const agentCount = agents.filter((a: any) =>
+    a.role && ['l1_agent', 'l2_agent', 'l3_agent'].includes(String(a.role))
+  ).length;
+  const tenantAdminCount = agents.filter((a: any) => a.role === 'tenant_admin').length;
+  const productLimitReached =
+    !!currentPlan &&
+    currentPlan.max_products > 0 &&
+    products.length >= currentPlan.max_products;
+  const agentLimitReached =
+    !!currentPlan &&
+    currentPlan.max_agents !== -1 &&
+    agentCount >= currentPlan.max_agents;
+  const peopleLimitReached =
+    !!currentPlan &&
+    tenantAdminCount >= 1 &&
+    (currentPlan.max_agents === -1 ? false : agentCount >= currentPlan.max_agents);
 
   const tenantName = (user as any)?.tenant_name || 'Your workspace';
   const displayName = (user as any)?.first_name
@@ -3304,25 +3326,61 @@ export default function TenantDashboardPage() {
                         List of products and services this tenant supports.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProductsError('');
-                        setShowProductModal(true);
-                      }}
-                      style={{
-                        padding: '8px 14px',
-                        borderRadius: 8,
-                        border: 'none',
-                        background: accentBrand,
-                        color: '#0B1120',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Add product
-                    </button>
+                    {!selectedPlanId ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPlansModal(true)}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: 8,
+                          border: 'none',
+                          background: accentBrand,
+                          color: '#0B1120',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Choose plan
+                      </button>
+                    ) : productLimitReached ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPlansModal(true)}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: 'transparent',
+                          color: textSecondary,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Plan limit reached ({products.length}/{currentPlan?.max_products})
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProductsError('');
+                          setShowProductModal(true);
+                        }}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: 8,
+                          border: 'none',
+                          background: accentBrand,
+                          color: '#0B1120',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Add product
+                      </button>
+                    )}
                   </div>
 
                   {productsError && (
@@ -3433,7 +3491,9 @@ export default function TenantDashboardPage() {
                         color: textSecondary,
                       }}
                     >
-                      No products yet. Click &quot;Add product&quot; to create your first product.
+                      {selectedPlanId
+                        ? 'No products yet. Click "Add product" to create your first product.'
+                        : 'Choose a plan above to add products.'}
                     </div>
                   )}
                 </>
@@ -3455,22 +3515,69 @@ export default function TenantDashboardPage() {
                         Tenant admins and support agents for this workspace.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowPeopleModal(true)}
-                      style={{
-                        padding: '8px 14px',
-                        borderRadius: 8,
-                        border: 'none',
-                        background: accentBrand,
-                        color: '#0B1120',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Add people
-                    </button>
+                    {!selectedPlanId ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPlansModal(true)}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: 8,
+                          border: 'none',
+                          background: accentBrand,
+                          color: '#0B1120',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Choose plan
+                      </button>
+                    ) : peopleLimitReached ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowPlansModal(true)}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: 'transparent',
+                          color: textSecondary,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Plan limit reached (1 admin, {agentCount}/{currentPlan?.max_agents === -1 ? '∞' : currentPlan?.max_agents} agents)
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAgentsError('');
+                          setEditingPersonId(null);
+                          setPeopleFirstName('');
+                          setPeopleLastName('');
+                          setAgentEmail('');
+                          setAgentRole(
+                            agentLimitReached ? 'tenant_admin' : 'l1_agent'
+                          );
+                          setAgentProducts([]);
+                          setShowPeopleModal(true);
+                        }}
+                        style={{
+                          padding: '8px 14px',
+                          borderRadius: 8,
+                          border: 'none',
+                          background: accentBrand,
+                          color: '#0B1120',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Add people
+                      </button>
+                    )}
                   </div>
 
                   {agentsError && (
@@ -3577,33 +3684,37 @@ export default function TenantDashboardPage() {
                               : '—'}
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                            {a.role && String(a.role).startsWith('l') && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setAgentsError('');
-                                  setResetAgentInfo('');
-                                  setResetAgentPassword('');
-                                  setResetAgentId(a.id);
-                                  const displayName =
-                                    [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
-                                  setResetAgentLabel(displayName);
-                                  setShowResetAgentPasswordModal(true);
-                                }}
-                                style={{
-                                  padding: '7px 10px',
-                                  borderRadius: 10,
-                                  border: `1px solid ${borderSubtle}`,
-                                  background: isDark ? 'rgba(15,23,42,0.75)' : '#fff',
-                                  color: textPrimary,
-                                  cursor: 'pointer',
-                                  fontSize: 12,
-                                  fontWeight: 700,
-                                }}
-                              >
-                                Reset
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAgentsError('');
+                                setEditingPersonId(a.id);
+                                setPeopleFirstName(a.first_name || '');
+                                setPeopleLastName(a.last_name || '');
+                                setAgentEmail(a.email || '');
+                                setAgentRole(a.role || 'l1_agent');
+                                setAgentProducts(
+                                  Array.isArray(a.assigned_products)
+                                    ? a.assigned_products
+                                        .map((p: any) => p?.id)
+                                        .filter((id: any): id is string => typeof id === 'string')
+                                    : []
+                                );
+                                setShowPeopleModal(true);
+                              }}
+                              style={{
+                                padding: '7px 10px',
+                                borderRadius: 10,
+                                border: `1px solid ${borderSubtle}`,
+                                background: isDark ? 'rgba(15,23,42,0.75)' : '#fff',
+                                color: textPrimary,
+                                cursor: 'pointer',
+                                fontSize: 12,
+                                fontWeight: 700,
+                              }}
+                            >
+                              Edit
+                            </button>
                           </div>
                         </div>
                       ))}
@@ -3618,7 +3729,9 @@ export default function TenantDashboardPage() {
                         color: textSecondary,
                       }}
                     >
-                      No people yet. Use &quot;Add people&quot; to invite admins or agents.
+                      {selectedPlanId
+                        ? 'No people yet. Use "Add people" to invite admins or agents.'
+                        : 'Choose a plan above to add people.'}
                     </div>
                   )}
                 </>
@@ -3642,26 +3755,62 @@ export default function TenantDashboardPage() {
                       Team members who handle tickets. Filter by product or add agents.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAgentsError('');
-                      setAgentProducts(agentFilterProductId ? [agentFilterProductId] : []);
-                      setShowAddAgentModal(true);
-                    }}
-                    style={{
-                      padding: '8px 14px',
-                      borderRadius: 8,
-                      border: 'none',
-                      background: accentBrand,
-                      color: '#0B1120',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Add agent
-                  </button>
+                  {!selectedPlanId ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowPlansModal(true)}
+                      style={{
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        border: 'none',
+                        background: accentBrand,
+                        color: '#0B1120',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Choose plan
+                    </button>
+                  ) : agentLimitReached ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowPlansModal(true)}
+                      style={{
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        border: `1px solid ${borderSubtle}`,
+                        background: 'transparent',
+                        color: textSecondary,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Plan limit reached ({agentCount}/{currentPlan?.max_agents} agents)
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAgentsError('');
+                        setAgentProducts(agentFilterProductId ? [agentFilterProductId] : []);
+                        setShowAddAgentModal(true);
+                      }}
+                      style={{
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        border: 'none',
+                        background: accentBrand,
+                        color: '#0B1120',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Add agent
+                    </button>
+                  )}
                 </div>
 
                 <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -3737,7 +3886,7 @@ export default function TenantDashboardPage() {
                     </div>
                   ) : (
                     <div style={{ padding: 18, border: `1px dashed ${borderSubtle}`, borderRadius: 12, fontSize: 12, color: textSecondary }}>
-                      {agentFilterProductId ? 'No agents assigned to this product yet.' : 'No agents yet. Click Add agent to invite.'}
+                      {agentFilterProductId ? 'No agents assigned to this product yet.' : selectedPlanId ? 'No agents yet. Click Add agent to invite.' : 'Choose a plan above to add agents.'}
                     </div>
                   );
                 })()}
@@ -3931,9 +4080,13 @@ export default function TenantDashboardPage() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 700 }}>Add person</div>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>
+                    {editingPersonId ? 'Edit person' : 'Add person'}
+                  </div>
                   <div style={{ fontSize: 12, color: textSecondary }}>
-                    Create a tenant admin or support agent for this workspace.
+                    {editingPersonId
+                      ? 'Update details for this tenant admin or support agent.'
+                      : 'Create a tenant admin or support agent for this workspace.'}
                   </div>
                 </div>
                 <button
@@ -3973,21 +4126,67 @@ export default function TenantDashboardPage() {
                   e.preventDefault();
                   const fullName = `${peopleFirstName} ${peopleLastName}`.trim();
                   if (!fullName || !agentEmail.trim()) return;
+                  if (!editingPersonId && currentPlan) {
+                    if (agentRole === 'tenant_admin' && tenantAdminCount >= 1) {
+                      setAgentsError('Plan allows only 1 admin. Choose a different role or upgrade plan.');
+                      return;
+                    }
+                    if (agentRole !== 'tenant_admin' && agentLimitReached) {
+                      setAgentsError(`Agent limit reached (${currentPlan.max_agents} agents). Upgrade plan to add more.`);
+                      return;
+                    }
+                  }
                   setAgentsError('');
                   setAgentsSaving(true);
                   try {
-                    await onboardingApi.inviteAgent({
-                      name: fullName,
-                      email: agentEmail.trim(),
-                      role: agentRole,
-                      assigned_products: agentRole === 'tenant_admin' ? [] : agentProducts,
-                    });
+                    if (editingPersonId) {
+                      const token =
+                        typeof window !== 'undefined'
+                          ? localStorage.getItem('gkt_token')
+                          : null;
+                      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+                      if (token) {
+                        (headers as any).Authorization = `Bearer ${token}`;
+                      }
+                      const resp = await fetch(
+                        `${API_BASE}/api/agents/${encodeURIComponent(editingPersonId)}`,
+                        {
+                          method: 'PATCH',
+                          headers,
+                          body: JSON.stringify({
+                            first_name: peopleFirstName.trim(),
+                            last_name: peopleLastName.trim(),
+                            email: agentEmail.trim(),
+                            role: agentRole,
+                            assigned_products:
+                              agentRole === 'tenant_admin' ? [] : agentProducts,
+                            new_password:
+                              peoplePassword.trim().length >= 8 ? peoplePassword.trim() : undefined,
+                          }),
+                        }
+                      );
+                      const body = await resp.json().catch(() => ({}));
+                      if (!resp.ok) {
+                        throw new Error(
+                          (body as any)?.error || (body as any)?.message || 'Failed to update person'
+                        );
+                      }
+                    } else {
+                      await onboardingApi.inviteAgent({
+                        name: fullName,
+                        email: agentEmail.trim(),
+                        role: agentRole,
+                        assigned_products: agentRole === 'tenant_admin' ? [] : agentProducts,
+                      });
+                    }
                     const list = await onboardingApi.getAgents();
                     setAgents(Array.isArray(list) ? list : []);
                     setPeopleFirstName('');
                     setPeopleLastName('');
                     setAgentEmail('');
                     setAgentProducts([]);
+                    setPeoplePassword('');
+                    setEditingPersonId(null);
                     setShowPeopleModal(false);
                   } catch (err: any) {
                     setAgentsError(err?.message || (err?.error && String(err.error)) || 'Failed to add person');
@@ -4067,6 +4266,40 @@ export default function TenantDashboardPage() {
                     </div>
                   </div>
 
+                  {editingPersonId && (
+                    <div>
+                      <label
+                        style={{
+                          display: 'block',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: textSecondary,
+                          marginBottom: 4,
+                        }}
+                      >
+                        New password (optional)
+                      </label>
+                      <input
+                        type="password"
+                        value={peoplePassword}
+                        onChange={(e) => setPeoplePassword(e.target.value)}
+                        placeholder="Leave blank to keep current password"
+                        style={{
+                          width: '100%',
+                          padding: '9px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${borderSubtle}`,
+                          background: inputBg,
+                          color: textPrimary,
+                          fontSize: 13,
+                        }}
+                      />
+                      <p style={{ marginTop: 4, fontSize: 11, color: textSecondary }}>
+                        Minimum 8 characters if you choose to change it.
+                      </p>
+                    </div>
+                  )}
+
                   <div
                     style={{
                       display: 'grid',
@@ -4136,10 +4369,25 @@ export default function TenantDashboardPage() {
                           fontSize: 13,
                         }}
                       >
-                        <option value="l1_agent">L1 Agent</option>
-                        <option value="l2_agent">L2 Agent</option>
-                        <option value="l3_agent">L3 Agent</option>
-                        <option value="tenant_admin">Admin</option>
+                        {editingPersonId ? (
+                          <>
+                            <option value="l1_agent">L1 Agent</option>
+                            <option value="l2_agent">L2 Agent</option>
+                            <option value="l3_agent">L3 Agent</option>
+                            <option value="tenant_admin">Admin</option>
+                          </>
+                        ) : (
+                          <>
+                            {!agentLimitReached && (
+                              <>
+                                <option value="l1_agent">L1 Agent</option>
+                                <option value="l2_agent">L2 Agent</option>
+                                <option value="l3_agent">L3 Agent</option>
+                              </>
+                            )}
+                            {tenantAdminCount < 1 && <option value="tenant_admin">Admin</option>}
+                          </>
+                        )}
                       </select>
                     </div>
                   </div>
@@ -4198,7 +4446,11 @@ export default function TenantDashboardPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (!agentsSaving) setShowPeopleModal(false);
+                      if (!agentsSaving) {
+                        setShowPeopleModal(false);
+                        setPeoplePassword('');
+                        setEditingPersonId(null);
+                      }
                     }}
                     style={{
                       padding: '8px 14px',
@@ -4241,7 +4493,13 @@ export default function TenantDashboardPage() {
                           : 1,
                     }}
                   >
-                    {agentsSaving ? 'Adding…' : 'Add person'}
+                    {agentsSaving
+                      ? editingPersonId
+                        ? 'Saving…'
+                        : 'Adding…'
+                      : editingPersonId
+                      ? 'Save changes'
+                      : 'Add person'}
                   </button>
                 </div>
               </form>
@@ -4800,8 +5058,7 @@ export default function TenantDashboardPage() {
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>Workspace plans</div>
                   <div style={{ fontSize: 12, color: textSecondary }}>
-                    Plans loaded from <code style={{ fontSize: 11 }}>billing_plans</code>. Your current plan is
-                    highlighted.
+                    Choose a plan below. Your current plan is highlighted. Click &quot;Select plan&quot; to switch.
                   </div>
                 </div>
                 <button
@@ -4901,21 +5158,56 @@ export default function TenantDashboardPage() {
                             </li>
                           )}
                         </ul>
-                        {isSelected && (
+                        {isSelected ? (
                           <div
                             style={{
-                              marginTop: 6,
+                              marginTop: 'auto',
+                              paddingTop: 8,
                               fontSize: 11,
                               fontWeight: 700,
                               color: accentChipText,
                               background: accentChipBg,
                               borderRadius: 999,
-                              padding: '3px 8px',
+                              padding: '6px 10px',
                               alignSelf: 'flex-start',
                             }}
                           >
                             Current plan
                           </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={plansSaving}
+                            onClick={async () => {
+                              setPlansError('');
+                              setPlansSaving(true);
+                              try {
+                                await onboardingApi.setPlan(plan.id);
+                                setSelectedPlanId(plan.id);
+                                setShowPlansModal(false);
+                              } catch (err: any) {
+                                setPlansError(err?.message || (err?.error && String(err.error)) || 'Failed to select plan');
+                              } finally {
+                                setPlansSaving(false);
+                              }
+                            }}
+                            style={{
+                              marginTop: 'auto',
+                              paddingTop: 8,
+                              width: '100%',
+                              padding: '8px 12px',
+                              borderRadius: 10,
+                              border: 'none',
+                              background: accentBrand,
+                              color: '#0B1120',
+                              fontSize: 13,
+                              fontWeight: 600,
+                              cursor: plansSaving ? 'not-allowed' : 'pointer',
+                              opacity: plansSaving ? 0.8 : 1,
+                            }}
+                          >
+                            {plansSaving ? 'Selecting…' : 'Select plan'}
+                          </button>
                         )}
                       </div>
                     );

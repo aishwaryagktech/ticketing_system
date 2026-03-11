@@ -27,4 +27,12 @@ router.delete('/billing/plans/:id', superAdminController.deletePlan);
 // Platform Analytics
 router.get('/stats', superAdminController.getPlatformStats);
 
+// Tenant products (all tenants, for dashboard)
+router.get('/tenant-products', superAdminController.listTenantProducts);
+router.get('/tenant-products/stats', superAdminController.getTenantProductStats);
+
+// Tickets (all tickets, for dashboard)
+router.get('/tickets', superAdminController.listTickets);
+router.get('/tickets/stats', superAdminController.getTicketStats);
+
 export default router;
