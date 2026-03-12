@@ -5,6 +5,8 @@ import { getActiveAdapter } from '../ai/provider';
 import { Conversation } from '../../mongo/models/conversation.model';
 import { getIO } from '../config/socket';
 import { sendEmail } from '../services/email.service';
+import { sendGmailMessage } from '../services/gmail.service';
+import { env } from '../config/env';
 import { decryptPII } from '../utils/encrypt';
 
 // GET /api/tickets/:id/comments
@@ -60,6 +62,8 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
         source: true,
         created_by: true,
         subject: true,
+        description: true,
+        created_at: true,
         ticket_number: true,
       },
     });
@@ -95,38 +99,78 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
       console.warn('createComment: sentiment update failed (continuing):', (aiErr as Error).message);
     }
 
-    // Mirror agent reply into Mongo Conversation so bot + human chat share one thread.
+    // Mirror agent reply into Mongo Conversation.
+    // web_form tickets: write to type:'ticket' (email thread, Gmail-synced).
+    // All other sources (bot_handoff, widget, etc.): write to type:'bot'.
     try {
       if (ticket.tenant_product_id) {
         const messageDoc = {
-          message_id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+          message_id: comment.id,
           author_type: 'agent',
           author_id: userId,
           author_name: 'Agent',
           body: body.trim(),
           is_internal: is_internal === true,
-          created_at: new Date(),
+          created_at: comment.created_at,
         };
 
-        await Conversation.updateOne(
-          {
-            tenant_product_id: ticket.tenant_product_id,
-            ticket_id: ticket.id,
-            type: 'bot',
-          },
-          {
-            $setOnInsert: {
+        if (ticket.source === 'web_form') {
+          // For email tickets, mirror to type:'ticket' so the conversation
+          // endpoint always reads from the same store that Gmail sync writes to.
+          if (is_internal !== true) {
+            const agentMsg = { ...messageDoc, message_id: comment.id };
+            const originalMsg = {
+              message_id: 'ticket-original',
+              author_type: 'user',
+              author_id: ticket.created_by || 'user',
+              author_name: 'Requester',
+              body: (ticket.description || ticket.subject || '').trim() || '—',
+              is_internal: false,
+              created_at: ticket.created_at,
+            };
+            await Conversation.updateOne(
+              {
+                tenant_product_id: ticket.tenant_product_id,
+                ticket_id: ticket.id,
+                type: 'ticket',
+              },
+              {
+                $setOnInsert: {
+                  tenant_product_id: ticket.tenant_product_id,
+                  tenant_id: ticket.tenant_id ?? null,
+                  ticket_id: ticket.id,
+                  type: 'ticket',
+                  created_at: new Date(),
+                  messages: [originalMsg],
+                },
+                $set: { updated_at: new Date() },
+                $push: { messages: agentMsg },
+              },
+              { upsert: true, strict: false },
+            );
+          }
+        } else {
+          // For bot_handoff / widget / other sources, mirror to type:'bot'.
+          await Conversation.updateOne(
+            {
               tenant_product_id: ticket.tenant_product_id,
-              tenant_id: ticket.tenant_id ?? null,
               ticket_id: ticket.id,
               type: 'bot',
-              created_at: new Date(),
             },
-            $set: { updated_at: new Date() },
-            $push: { messages: messageDoc },
-          },
-          { upsert: true, strict: false },
-        );
+            {
+              $setOnInsert: {
+                tenant_product_id: ticket.tenant_product_id,
+                tenant_id: ticket.tenant_id ?? null,
+                ticket_id: ticket.id,
+                type: 'bot',
+                created_at: new Date(),
+              },
+              $set: { updated_at: new Date() },
+              $push: { messages: { ...messageDoc, message_id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}` } },
+            },
+            { upsert: true, strict: false },
+          );
+        }
       }
     } catch (mongoErr) {
       console.warn(
@@ -151,47 +195,93 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
       );
     }
 
-    // For web_form tickets, non-internal comments are sent as emails: From (verified sender) → To (requester).
+    // For web_form tickets, non-internal comments are sent as emails.
+    // Prefer Gmail (when GMAIL_SYNC_ACCOUNT is set) so replies land in the
+    // authorized inbox and can be fetched by the thread sync on Refresh.
     let emailSent = false;
+    let sentGmailThreadId: string | null = null;
     if (ticket.source === 'web_form' && is_internal !== true && ticket.created_by) {
+      const gmailSyncAccount = String(env.GMAIL_SYNC_ACCOUNT || '').toLowerCase();
+      const useGmail = Boolean(gmailSyncAccount);
+
       try {
-        let agentEmail: string | null = null;
         let agentName: string | null = null;
         try {
           const agentUser = await prisma.user.findUnique({
             where: { id: userId },
-            select: { email: true, first_name: true, last_name: true },
+            select: { first_name: true, last_name: true },
           });
-          if (agentUser?.email) {
-            try {
-              agentEmail = decryptPII(agentUser.email);
-            } catch {
-              agentEmail = agentUser.email;
-            }
-          }
           const fullName = [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(' ').trim();
           agentName = fullName || null;
         } catch {
-          // ignore lookup failures
+          // ignore
         }
 
-        // Send mail: To = requester (ticket.created_by). From = SENDGRID_FROM_EMAIL (verified).
-        // Reply-To = agent so replies go to the agent.
-        await sendEmail({
-          to: ticket.created_by,
-          subject: `Re: ${ticket.ticket_number} - ${ticket.subject}`,
-          text: body.trim(),
-          replyTo: agentEmail || undefined,
-          fromName: agentName || 'Support',
-          // fromEmail omitted so SendGrid uses SENDGRID_FROM_EMAIL (must be verified in SendGrid)
-        });
-        emailSent = true;
+        const subject = `Re: ${ticket.ticket_number} - ${ticket.subject}`;
+
+        if (useGmail && ticket.tenant_product_id) {
+          // Look up stored Gmail thread ID (if any) from the Mongo Conversation doc.
+          let knownThreadId: string | null = null;
+          try {
+            const conv = await Conversation.findOne(
+              { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'ticket' },
+              { gmail_thread_id: 1 },
+            ).lean() as any;
+            knownThreadId = conv?.gmail_thread_id || null;
+          } catch {
+            // ignore — we'll send without a threadId and get a new one
+          }
+
+          const sent = await sendGmailMessage({
+            authedEmail: gmailSyncAccount,
+            to: ticket.created_by,
+            subject,
+            body: body.trim(),
+            fromName: agentName || 'Support',
+            knownThreadId,
+          });
+
+          // Persist the thread ID so the next send and every Refresh can use it.
+          if (sent.threadId && ticket.tenant_product_id) {
+            try {
+              await Conversation.updateOne(
+                { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'ticket' },
+                {
+                  $setOnInsert: {
+                    tenant_product_id: ticket.tenant_product_id,
+                    tenant_id: ticket.tenant_id ?? null,
+                    ticket_id: ticket.id,
+                    type: 'ticket',
+                    created_at: new Date(),
+                    messages: [],
+                  },
+                  $set: { updated_at: new Date(), gmail_thread_id: sent.threadId },
+                },
+                { upsert: true, strict: false },
+              );
+              sentGmailThreadId = sent.threadId;
+            } catch (mongoErr) {
+              console.warn('createComment: failed to store gmail_thread_id:', (mongoErr as Error).message);
+            }
+          }
+          emailSent = true;
+        } else {
+          // Fallback: SendGrid
+          await sendEmail({
+            to: ticket.created_by,
+            subject,
+            text: body.trim(),
+            replyTo: env.SENDGRID_FROM_EMAIL || undefined,
+            fromName: agentName || 'Support',
+          });
+          emailSent = true;
+        }
       } catch (emailErr) {
         console.warn('createComment: failed to send email reply (continuing):', (emailErr as Error).message);
       }
     }
 
-    res.status(201).json({ ...comment, email_sent: emailSent });
+    res.status(201).json({ ...comment, email_sent: emailSent, gmail_thread_id: sentGmailThreadId });
   } catch (e) {
     console.error('createComment error:', e);
     res.status(500).json({ error: 'Failed to create comment' });

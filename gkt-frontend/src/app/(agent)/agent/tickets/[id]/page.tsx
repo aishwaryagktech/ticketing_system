@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { ticketApi } from '@/lib/api/ticket.api';
 import { onboardingApi } from '@/lib/api/onboarding.api';
+import { gmailApi } from '@/lib/api/gmail.api';
 import { useAuthStore } from '@/store/auth.store';
 
 type Ticket = any;
@@ -19,11 +20,12 @@ export default function AgentTicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user } = useAuthStore();
+  const { user, hydrate } = useAuthStore();
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [reply, setReply] = useState('');
   const [isInternal, setIsInternal] = useState(false);
@@ -33,42 +35,51 @@ export default function AgentTicketDetailPage() {
   const hasMarkedOpenRef = useRef(false);
   const [nextEscalationAgents, setNextEscalationAgents] = useState<Array<{ id: string; first_name?: string | null; last_name?: string | null; email?: string | null; role?: string | null }>>([]);
   const [nextEscalationLoading, setNextEscalationLoading] = useState(false);
+  const [escalationHistory, setEscalationHistory] = useState<Array<{ from_level: number; to_level: number; trigger_reason: string; triggered_by_name: string | null; created_at: string }>>([]);
+  const [escalationHistoryLoading, setEscalationHistoryLoading] = useState(false);
+  const [escalatedTo, setEscalatedTo] = useState<string | null>(null);
 
   const isReadOnly = (searchParams.get('readonly') || '').toLowerCase() === '1' || (searchParams.get('readonly') || '').toLowerCase() === 'true';
 
   const statusNorm = ticket ? String(ticket.status || 'new_ticket').toLowerCase().replace(/-/g, '_') : '';
-  const showStartInsteadOfReply = !isReadOnly && (statusNorm === 'new_ticket' || statusNorm === 'open');
-  const showReplyArea = !isReadOnly && !showStartInsteadOfReply;
+  const showStartInsteadOfReply = !isReadOnly && !escalatedTo && (statusNorm === 'new_ticket' || statusNorm === 'open');
+  const showReplyArea = !isReadOnly && !showStartInsteadOfReply && !escalatedTo;
   const showResolvedComplete = !isReadOnly && (statusNorm === 'in_progress' || statusNorm === 'pending_user');
 
   const canEscalateTo2 = user?.role === 'l1_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
   const canEscalateTo3 = user?.role === 'l2_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
+  const canEscalateToAdmin = user?.role === 'l3_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
 
   const nextEscalationRole = useMemo(() => {
     const r = user?.role;
     if (r === 'l1_agent') return { role: 'l2_agent' as const, label: 'L2' };
     if (r === 'l2_agent') return { role: 'l3_agent' as const, label: 'L3' };
+    if (r === 'l3_agent') return { role: 'tenant_admin' as const, label: 'Admin' };
     return null;
   }, [user?.role]);
 
   useEffect(() => {
-    if (!ticket?.tenant_product_id || !nextEscalationRole) {
+    if (!nextEscalationRole) {
       setNextEscalationAgents([]);
       return;
     }
+    const tpId = ticket?.tenant_product_id;
     let cancelled = false;
     setNextEscalationLoading(true);
     onboardingApi
       .getAgents()
       .then((list: any[]) => {
         if (cancelled) return;
-        const tpId = ticket.tenant_product_id;
-        const filtered = (Array.isArray(list) ? list : []).filter(
-          (a: any) =>
-            a.role === nextEscalationRole.role &&
-            Array.isArray(a.assigned_products) &&
-            a.assigned_products.some((p: any) => p && p.id === tpId)
-        );
+        const arr = Array.isArray(list) ? list : [];
+        const filtered =
+          nextEscalationRole.role === 'tenant_admin'
+            ? arr.filter((a: any) => a.role === 'tenant_admin')
+            : arr.filter(
+                (a: any) =>
+                  a.role === nextEscalationRole.role &&
+                  Array.isArray(a.assigned_products) &&
+                  (tpId && a.assigned_products.some((p: any) => p && p.id === tpId))
+              );
         setNextEscalationAgents(filtered);
       })
       .catch(() => {
@@ -79,6 +90,25 @@ export default function AgentTicketDetailPage() {
       });
     return () => { cancelled = true; };
   }, [ticket?.tenant_product_id, nextEscalationRole?.role]);
+
+  useEffect(() => {
+    if (tab !== 'escalations' || !id) return;
+    let cancelled = false;
+    setEscalationHistoryLoading(true);
+    ticketApi
+      .getEscalationHistory(id)
+      .then((res: any) => {
+        if (cancelled) return;
+        setEscalationHistory(Array.isArray(res?.data?.items) ? res.data.items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setEscalationHistory([]);
+      })
+      .finally(() => {
+        if (!cancelled) setEscalationHistoryLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, tab]);
 
   const load = async () => {
     setLoading(true);
@@ -105,6 +135,25 @@ export default function AgentTicketDetailPage() {
       setLoading(false);
     }
   };
+
+  const refreshEmailThread = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      // 1) Sync from Gmail into Mongo (best-effort)
+      await gmailApi.syncTicketThread(String(id));
+    } catch (e: any) {
+      const msg = e?.response?.data?.error || e?.message || 'Failed to sync Gmail thread';
+      // Show a clear message if OAuth not completed.
+      setError(msg);
+    }
+    // 2) Reload ticket + conversation (from our DB/Mongo)
+    await load();
+  };
+
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
 
   useEffect(() => {
     load();
@@ -159,7 +208,7 @@ export default function AgentTicketDetailPage() {
         // ignore polling errors, main load() handles user-visible errors
         console.warn('pollConversation failed:', e?.message || e);
       }
-    }, 5000);
+    }, 10000);
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
@@ -176,16 +225,26 @@ export default function AgentTicketDetailPage() {
     setError('');
     try {
       const res = await ticketApi.addComment(id, text, isInternal);
-      const data = res?.data as { email_sent?: boolean } | undefined;
+      const data = res?.data as { email_sent?: boolean; gmail_thread_id?: string | null } | undefined;
       setReply('');
       setIsInternal(false);
-      await load();
-      if (isWebForm && data?.email_sent === true) {
-        setError('');
-        // Optional: show success toast; for now rely on thread refresh
+
+      // When the reply was sent via Gmail, auto-sync the thread so the UI
+      // immediately shows the actual sent message fetched from the Gmail thread.
+      if (isWebForm && data?.email_sent === true && data?.gmail_thread_id) {
+        setSyncing(true);
+        try {
+          await gmailApi.syncTicketThread(String(id));
+        } catch {
+          // Non-fatal: thread sync failed, conversation will still reload from local store
+        } finally {
+          setSyncing(false);
+        }
       } else if (isWebForm && data?.email_sent === false) {
-        setError('Comment saved, but email could not be sent. Check SendGrid config and logs.');
+        setError('Comment saved, but email could not be sent. Check SendGrid/Gmail config and logs.');
       }
+
+      await load();
     } catch (e: any) {
       setError(e?.message || 'Failed to add comment');
     } finally {
@@ -221,6 +280,10 @@ export default function AgentTicketDetailPage() {
     }
   };
 
+  const refreshEscalationHistory = () => {
+    ticketApi.getEscalationHistory(id).then((r: any) => setEscalationHistory(Array.isArray(r?.data?.items) ? r.data.items : [])).catch(() => {});
+  };
+
   const escalate = async (level: number) => {
     if (isReadOnly) return;
     setSaving(true);
@@ -228,6 +291,29 @@ export default function AgentTicketDetailPage() {
     try {
       await ticketApi.update(id, { escalation_level: level });
       await load();
+      refreshEscalationHistory();
+      setEscalatedTo(`L${level}`);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to escalate');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const escalateToAgent = async (level: number, agentId: string) => {
+    if (isReadOnly) return;
+    setSaving(true);
+    setError('');
+    try {
+      await ticketApi.update(id, { escalation_level: level, assigned_to: agentId });
+      // Resolve agent name from the list for the banner
+      const agent = nextEscalationAgents.find((a) => a.id === agentId);
+      const agentName = agent
+        ? ([agent.first_name, agent.last_name].filter(Boolean).join(' ').trim() || agent.email || 'agent')
+        : 'agent';
+      await load();
+      refreshEscalationHistory();
+      setEscalatedTo(agentName);
     } catch (e: any) {
       setError(e?.message || 'Failed to escalate');
     } finally {
@@ -285,6 +371,20 @@ export default function AgentTicketDetailPage() {
     (user?.email as string | undefined) ||
     '—';
 
+  const priority = String(ticket.priority || 'p2').toLowerCase();
+  const isP1 = priority === 'p1';
+  const role = typeof user?.role === 'string' ? user.role.toLowerCase() : '';
+  const isL1 = role === 'l1_agent';
+  const isL3 = role === 'l3_agent';
+  const isAdmin = role === 'tenant_admin' || role === 'super_admin';
+  const canAssignToMe =
+    isAdmin || (isP1 ? isL3 : isL1);
+  const assignToMeReason = canAssignToMe
+    ? null
+    : isP1
+      ? 'P1 tickets can only be assigned to L3 agents.'
+      : 'Non-P1 tickets can only be assigned to L1 agents.';
+
   const chip = (label: string, value: string, bg: string, fg: string) => (
     <span
       style={{
@@ -335,33 +435,13 @@ export default function AgentTicketDetailPage() {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
               {chip('Priority', String(ticket.priority || 'p2').toUpperCase(), 'rgba(250,204,21,0.18)', '#FACC15')}
               {chip('Status', String(ticket.status || 'new_ticket'), 'rgba(148,163,184,0.12)', '#E5E7EB')}
-              {chip('Level', `L${Number(ticket.escalation_level || 0)}`, 'rgba(59,130,246,0.14)', '#93C5FD')}
+              {chip('Level', Number(ticket.escalation_level || 0) === 4 ? 'Admin' : `L${Number(ticket.escalation_level || 0)}`, 'rgba(59,130,246,0.14)', '#93C5FD')}
+              {(ticket as any).escalated_by_name && chip('Escalated', `by ${(ticket as any).escalated_by_name}`, 'rgba(59,130,246,0.2)', '#93C5FD')}
               {chip('SLA', sla.label, 'rgba(148,163,184,0.12)', sla.color)}
               {ticket.tenant_product_id ? chip('Product', String(ticket.tenant_product_id).slice(0, 8) + '…', 'rgba(148,163,184,0.12)', '#E5E7EB') : null}
             </div>
           </div>
 
-          {!isReadOnly && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <button
-                type="button"
-                onClick={assignToMe}
-                disabled={saving}
-                style={{
-                  padding: '9px 12px',
-                  borderRadius: 999,
-                  border: '1px solid rgba(148,163,184,0.35)',
-                  background: 'rgba(15,23,42,0.75)',
-                  color: '#E5E7EB',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  fontWeight: 800,
-                }}
-              >
-                Assign to me
-              </button>
-            </div>
-          )}
         </div>
 
         {error && (
@@ -406,12 +486,12 @@ export default function AgentTicketDetailPage() {
                     </button>
                   </div>
                   <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {canEscalateTo2 && (
+                    {canEscalateTo2 && nextEscalationRole?.label !== 'L2' && !escalatedTo && (
                       <button type="button" onClick={() => escalate(2)} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: 'none', background: 'rgba(59,130,246,0.85)', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 950 }}>
                         Escalate L2
                       </button>
                     )}
-                    {canEscalateTo3 && (
+                    {canEscalateTo3 && nextEscalationRole?.label !== 'L3' && !escalatedTo && (
                       <button type="button" onClick={() => escalate(3)} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: 'none', background: 'rgba(168,85,247,0.85)', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 950 }}>
                         Escalate L3
                       </button>
@@ -421,11 +501,37 @@ export default function AgentTicketDetailPage() {
               )}
 
               {nextEscalationRole && (
-                <div style={{ padding: 10, borderRadius: 14, border: '1px solid rgba(148,163,184,0.22)', background: 'rgba(2,6,23,0.55)' }}>
-                  <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 6 }}>
-                    Next escalation: {nextEscalationRole.label} agents
+                <div
+                  style={{
+                    padding: 10,
+                    borderRadius: 14,
+                    border: escalatedTo
+                      ? '1px solid rgba(59,130,246,0.45)'
+                      : '1px solid rgba(148,163,184,0.22)',
+                    background: escalatedTo ? 'rgba(30,64,175,0.15)' : 'rgba(2,6,23,0.55)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                      Next escalation: {nextEscalationRole.label} — choose to escalate to:
+                    </div>
+                    {escalatedTo && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: 999,
+                          background: 'rgba(59,130,246,0.25)',
+                          color: '#93C5FD',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        ✓ Escalated
+                      </span>
+                    )}
                   </div>
-                  {!ticket?.tenant_product_id ? (
+                  {nextEscalationRole.role !== 'tenant_admin' && !ticket?.tenant_product_id ? (
                     <div style={{ fontSize: 11, color: '#94A3B8' }}>
                       Link ticket to a product to see agents for this product.
                     </div>
@@ -433,15 +539,41 @@ export default function AgentTicketDetailPage() {
                     <div style={{ fontSize: 11, color: '#94A3B8' }}>Loading…</div>
                   ) : nextEscalationAgents.length === 0 ? (
                     <div style={{ fontSize: 11, color: '#94A3B8' }}>
-                      No {nextEscalationRole.label} agents assigned to this product.
+                      {nextEscalationRole.role === 'tenant_admin'
+                        ? 'No Admin users in this tenant.'
+                        : `No ${nextEscalationRole.label} agents assigned to this product.`}
                     </div>
                   ) : (
-                    <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: '#E5E7EB', lineHeight: 1.6 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
                       {nextEscalationAgents.map((a) => {
                         const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
-                        return <li key={a.id}>{name}</li>;
+                        const level = nextEscalationRole.role === 'l2_agent' ? 2 : nextEscalationRole.role === 'l3_agent' ? 3 : 4;
+                        return (
+                          <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: 12, color: '#E5E7EB' }}>{name}</span>
+                            {!isReadOnly && !escalatedTo && (
+                              <button
+                                type="button"
+                                onClick={() => escalateToAgent(level, a.id)}
+                                disabled={saving}
+                                style={{
+                                  padding: '6px 10px',
+                                  borderRadius: 999,
+                                  border: 'none',
+                                  background: nextEscalationRole.label === 'Admin' ? 'rgba(234,88,12,0.85)' : nextEscalationRole.label === 'L3' ? 'rgba(168,85,247,0.85)' : 'rgba(59,130,246,0.85)',
+                                  color: '#E5E7EB',
+                                  cursor: saving ? 'not-allowed' : 'pointer',
+                                  fontSize: 11,
+                                  fontWeight: 800,
+                                }}
+                              >
+                                {saving ? 'Escalating…' : `Escalate to ${name}`}
+                              </button>
+                            )}
+                          </div>
+                        );
                       })}
-                    </ul>
+                    </div>
                   )}
                 </div>
               )}
@@ -487,8 +619,28 @@ export default function AgentTicketDetailPage() {
                       background: 'rgba(15,23,42,0.9)',
                     }}
                   >
-                    <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 800, marginBottom: 4 }}>
-                      Original request
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 800, marginBottom: 4 }}>
+                        Original request
+                      </div>
+                      <button
+                        type="button"
+                        onClick={refreshEmailThread}
+                        disabled={loading || saving}
+                        title="Refresh email thread"
+                        style={{
+                          padding: '6px 10px',
+                          borderRadius: 999,
+                          border: '1px solid rgba(148,163,184,0.25)',
+                          background: loading || saving ? 'rgba(30,41,59,0.5)' : 'rgba(2,6,23,0.55)',
+                          color: loading || saving ? '#64748B' : '#E5E7EB',
+                          cursor: loading || saving ? 'not-allowed' : 'pointer',
+                          fontSize: 11,
+                          fontWeight: 900,
+                        }}
+                      >
+                        {loading ? 'Refreshing…' : 'Refresh'}
+                      </button>
                     </div>
                     <div
                       style={{
@@ -544,6 +696,43 @@ export default function AgentTicketDetailPage() {
                     </div>
                   ))}
                 </div>
+
+                {escalatedTo && (
+                  <div
+                    style={{
+                      padding: '14px 16px',
+                      borderTop: '1px solid rgba(59,130,246,0.35)',
+                      background: 'rgba(30,64,175,0.18)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: '50%',
+                        background: 'rgba(59,130,246,0.25)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 16,
+                        flexShrink: 0,
+                      }}
+                    >
+                      ↑
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#93C5FD' }}>
+                        Ticket escalated to {escalatedTo}
+                      </span>
+                      <span style={{ fontSize: 11, color: '#64748B' }}>
+                        This ticket has been handed off. Replies are disabled for your role.
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {showStartInsteadOfReply && (
                   <div style={{ padding: 20, borderTop: '1px solid rgba(148,163,184,0.2)', textAlign: 'center', background: 'rgba(15,23,42,0.6)' }}>
@@ -686,12 +875,12 @@ export default function AgentTicketDetailPage() {
                             border: 'none',
                             background: '#FACC15',
                             color: '#0F172A',
-                            cursor: 'pointer',
+                            cursor: saving ? 'default' : 'pointer',
                             fontSize: 12,
                             fontWeight: 950,
                           }}
                         >
-                          {isWebForm ? 'Send email' : 'Send'}
+                          {syncing ? 'Syncing thread…' : saving ? 'Sending…' : isWebForm ? 'Send email' : 'Send'}
                         </button>
                       </div>
                     </div>
@@ -713,6 +902,7 @@ export default function AgentTicketDetailPage() {
                     ['Assigned to', ticket.assigned_to || '—'],
                     ['Tenant product', ticket.tenant_product_id || '—'],
                     ['Escalation level', String(ticket.escalation_level)],
+                    ...((ticket as any).escalated_by_name ? [['Escalated by', (ticket as any).escalated_by_name] as const] : []),
                   ].map(([k, v]) => (
                     <React.Fragment key={k}>
                       <div style={{ color: '#94A3B8', fontWeight: 800 }}>{k}</div>
@@ -749,31 +939,53 @@ export default function AgentTicketDetailPage() {
               <div style={{ padding: 12 }}>
                 <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 900, marginBottom: 10 }}>Escalations</div>
                 <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)', fontSize: 12 }}>
-                  <div style={{ color: '#E5E7EB', fontWeight: 900 }}>Current level: L{Number(ticket.escalation_level || 0)}</div>
+                  <div style={{ color: '#E5E7EB', fontWeight: 900 }}>
+                    Current level: {Number(ticket.escalation_level || 0) === 4 ? 'Admin' : `L${Number(ticket.escalation_level || 0)}`}
+                  </div>
                   {nextEscalationRole && (
                     <div style={{ marginTop: 12 }}>
                       <div style={{ color: '#94A3B8', fontWeight: 800, marginBottom: 6 }}>
-                        {nextEscalationRole.label} agents (next in line for this product)
+                        {nextEscalationRole.label} (next in line)
                       </div>
-                      {ticket?.tenant_product_id ? (
-                        nextEscalationAgents.length === 0 ? (
-                          <div style={{ color: '#94A3B8' }}>No {nextEscalationRole.label} agents assigned to this product.</div>
-                        ) : (
-                          <ul style={{ margin: 0, paddingLeft: 16, color: '#E5E7EB', lineHeight: 1.8 }}>
-                            {nextEscalationAgents.map((a) => {
-                              const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
-                              return <li key={a.id}>{name}</li>;
-                            })}
-                          </ul>
-                        )
-                      ) : (
+                      {nextEscalationRole.role !== 'tenant_admin' && !ticket?.tenant_product_id ? (
                         <div style={{ color: '#94A3B8' }}>Link ticket to a product to see escalation agents.</div>
+                      ) : nextEscalationAgents.length === 0 ? (
+                        <div style={{ color: '#94A3B8' }}>
+                          {nextEscalationRole.role === 'tenant_admin' ? 'No Admin users in this tenant.' : `No ${nextEscalationRole.label} agents assigned to this product.`}
+                        </div>
+                      ) : (
+                        <ul style={{ margin: 0, paddingLeft: 16, color: '#E5E7EB', lineHeight: 1.8 }}>
+                          {nextEscalationAgents.map((a) => {
+                            const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
+                            return <li key={a.id}>{name}</li>;
+                          })}
+                        </ul>
                       )}
                     </div>
                   )}
-                  <div style={{ marginTop: 12, color: '#94A3B8' }}>
-                    Escalation history (manual + auto reasons) will appear here once we add audit logging.
-                  </div>
+                  <div style={{ marginTop: 16, color: '#94A3B8', fontWeight: 800, marginBottom: 6 }}>Escalation history</div>
+                  {escalationHistoryLoading ? (
+                    <div style={{ color: '#94A3B8', fontSize: 12 }}>Loading…</div>
+                  ) : escalationHistory.length === 0 ? (
+                    <div style={{ color: '#94A3B8', fontSize: 12 }}>No escalations recorded yet. L1 → L2 → L3 → Admin path is tracked here.</div>
+                  ) : (
+                    <ul style={{ margin: 0, paddingLeft: 16, color: '#E5E7EB', lineHeight: 2, listStyle: 'none' }}>
+                      {escalationHistory.map((entry, idx) => {
+                        const fromLabel = entry.from_level === 4 ? 'Admin' : `L${entry.from_level}`;
+                        const toLabel = entry.to_level === 4 ? 'Admin' : `L${entry.to_level}`;
+                        const by = entry.triggered_by_name ? ` by ${entry.triggered_by_name}` : '';
+                        const date = entry.created_at ? new Date(entry.created_at).toLocaleString() : '';
+                        return (
+                          <li key={idx} style={{ borderLeft: '3px solid rgba(59,130,246,0.5)', paddingLeft: 10, marginBottom: 6 }}>
+                            {fromLabel} → {toLabel}{by} — {date}
+                            {entry.trigger_reason && entry.trigger_reason !== 'manual' && (
+                              <span style={{ color: '#94A3B8', fontSize: 11 }}> ({entry.trigger_reason})</span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </div>
               </div>
             )}

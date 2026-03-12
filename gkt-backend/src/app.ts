@@ -23,6 +23,7 @@ import pluginRoutes from './routes/plugin.routes';
 import publicRoutes from './routes/public.routes';
 import webhookRoutes from './routes/webhook.routes';
 import widgetPublicRoutes from './routes/widget-public.routes';
+import gmailRoutes from './routes/gmail.routes';
 
 const app = express();
 
@@ -63,6 +64,7 @@ app.use('/api/public', publicRoutes);
 app.use('/api/public-config', brandingPublicRoutes);
 app.use('/api/widget', widgetPublicRoutes);
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/gmail', gmailRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {

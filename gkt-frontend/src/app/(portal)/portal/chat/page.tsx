@@ -347,20 +347,23 @@ export default function PortalChatPage() {
     <div
       style={{
         height: '100vh',
-        minHeight: '100vh',
+        height: '100vh',
+        maxHeight: '100vh',
         display: 'flex',
         alignItems: 'flex-end',
         justifyContent: 'flex-end',
         background: '#020617',
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif',
         padding: 0,
+        overflow: 'hidden',
       }}
     >
       <div
         style={{
           width: '100%',
           maxWidth: 420,
-          height: '100%',
+          height: '100vh',
+          minHeight: 0,
           borderRadius: 20,
           border: '1px solid rgba(148,163,184,0.5)',
           background: 'radial-gradient(circle at top, #1d283a 0, #020617 60%)',
@@ -491,13 +494,15 @@ export default function PortalChatPage() {
 
         {/* Body: bot chat vs tickets view */}
         {view === 'tickets' ? (
-          <div style={{ display: 'flex', flex: 1, borderTop: '1px solid rgba(30,64,175,0.4)' }}>
+          <div style={{ display: 'flex', flex: 1, minHeight: 0, borderTop: '1px solid rgba(30,64,175,0.4)' }}>
             <div
               style={{
                 width: 150,
+                flexShrink: 0,
                 borderRight: '1px solid rgba(30,64,175,0.4)',
                 padding: '8px 6px',
                 fontSize: 11,
+                overflowY: 'auto',
               }}
             >
               <div style={{ marginBottom: 6, color: '#9CA3AF', fontWeight: 600 }}>My tickets</div>

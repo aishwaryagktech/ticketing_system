@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/store/auth.store';
 import { onboardingApi, type ConfigurationStatus } from '@/lib/api/onboarding.api';
+import { billingApi } from '@/lib/api/billing.api';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
@@ -2516,12 +2517,20 @@ export default function TenantDashboardPage() {
   const [resetAgentInfo, setResetAgentInfo] = useState('');
 
   // Plan state
-  const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; max_products: number; price_usd: unknown }>>([]);
+  const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; max_products: number; price_usd: unknown; price_inr: unknown }>>([]);
   const [plansLoading, setPlansLoading] = useState(false);
   const [plansSaving, setPlansSaving] = useState(false);
   const [plansError, setPlansError] = useState('');
   const [showPlansModal, setShowPlansModal] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [paymentReceipt, setPaymentReceipt] = useState<{
+    payment_id: string;
+    order_id: string;
+    plan_name: string;
+    amount_inr: number;
+    paid_at: string;
+    valid_until: string;
+  } | null>(null);
   const [showProductModal, setShowProductModal] = useState(false);
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [peopleFirstName, setPeopleFirstName] = useState('');
@@ -2578,6 +2587,7 @@ export default function TenantDashboardPage() {
             max_tickets_per_month: pl.max_tickets_per_month,
             max_products: typeof pl.max_products === 'number' ? pl.max_products : 0,
             price_usd: pl.price_usd,
+            price_inr: pl.price_inr,
           }))
         );
         const currentPlanId = state?.tenant?.plan_id || null;
@@ -2883,6 +2893,24 @@ export default function TenantDashboardPage() {
         </div>
 
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Link
+            href="/admin/billing"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 10px',
+              borderRadius: '10px',
+              textDecoration: 'none',
+              color: textSecondary,
+              fontSize: 13,
+              border: `1px solid ${borderSubtle}`,
+              background: 'transparent',
+            }}
+          >
+            <span>Billing &amp; Invoices</span>
+            <span style={{ fontSize: 11 }}>→</span>
+          </Link>
           <div
             style={{
               borderRadius: '14px',
@@ -5182,12 +5210,66 @@ export default function TenantDashboardPage() {
                               setPlansError('');
                               setPlansSaving(true);
                               try {
-                                await onboardingApi.setPlan(plan.id);
-                                setSelectedPlanId(plan.id);
-                                setShowPlansModal(false);
+                                const res = await billingApi.createOrder(plan.id);
+                                const { order_id, amount, currency, key_id } = res.data;
+
+                                const options = {
+                                  key: key_id,
+                                  amount,
+                                  currency,
+                                  name: 'GKT Ticketing',
+                                  description: `Subscribe to ${plan.name}`,
+                                  order_id,
+                                  handler: async (response: any) => {
+                                    try {
+                                      const verifyRes = await billingApi.verifyPayment({
+                                        razorpay_order_id: response.razorpay_order_id,
+                                        razorpay_payment_id: response.razorpay_payment_id,
+                                        razorpay_signature: response.razorpay_signature,
+                                        plan_id: plan.id,
+                                      });
+                                      setSelectedPlanId(plan.id);
+                                      setShowPlansModal(false);
+                                      setPaymentReceipt(verifyRes.data?.transaction ?? {
+                                        payment_id: response.razorpay_payment_id,
+                                        order_id: response.razorpay_order_id,
+                                        plan_name: plan.name,
+                                        amount_inr: Math.round(amount / 100),
+                                        paid_at: new Date().toISOString(),
+                                        valid_until: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+                                      });
+                                    } catch {
+                                      setPlansError('Payment succeeded but activation failed. Contact support.');
+                                    } finally {
+                                      setPlansSaving(false);
+                                    }
+                                  },
+                                  modal: {
+                                    ondismiss: () => {
+                                      setPlansSaving(false);
+                                    },
+                                  },
+                                  theme: { color: accentBrand },
+                                };
+
+                                const RazorpayCheckout = (window as any).Razorpay;
+                                if (!RazorpayCheckout) {
+                                  setPlansError('Payment gateway failed to load. Please refresh and try again.');
+                                  setPlansSaving(false);
+                                  return;
+                                }
+                                const rzp = new RazorpayCheckout(options);
+                                rzp.on('payment.failed', (response: any) => {
+                                  setPlansError(response?.error?.description || 'Payment failed. Please try again.');
+                                  setPlansSaving(false);
+                                });
+                                rzp.open();
                               } catch (err: any) {
-                                setPlansError(err?.message || (err?.error && String(err.error)) || 'Failed to select plan');
-                              } finally {
+                                const msg =
+                                  err?.response?.data?.error ||
+                                  err?.message ||
+                                  'Failed to initiate payment';
+                                setPlansError(msg);
                                 setPlansSaving(false);
                               }
                             }}
@@ -5206,7 +5288,7 @@ export default function TenantDashboardPage() {
                               opacity: plansSaving ? 0.8 : 1,
                             }}
                           >
-                            {plansSaving ? 'Selecting…' : 'Select plan'}
+                            {plansSaving ? 'Opening payment…' : 'Select plan'}
                           </button>
                         )}
                       </div>
@@ -5218,6 +5300,165 @@ export default function TenantDashboardPage() {
           </div>
         )}
         </div>
+
+        {paymentReceipt && (
+          <div
+            onClick={() => setPaymentReceipt(null)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,0.6)',
+              backdropFilter: 'blur(4px)',
+              zIndex: 9999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 20,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: isDark ? '#0f172a' : '#ffffff',
+                border: `1px solid ${borderSubtle}`,
+                borderRadius: 20,
+                padding: '32px 28px',
+                width: '100%',
+                maxWidth: 420,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 0,
+              }}
+            >
+              {/* Header */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, marginBottom: 28 }}>
+                <div
+                  style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: '50%',
+                    background: 'rgba(34,197,94,0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 26,
+                  }}
+                >
+                  ✓
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: textPrimary }}>Payment Successful</div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: '3px 10px',
+                    borderRadius: 999,
+                    background: 'rgba(34,197,94,0.12)',
+                    color: '#22c55e',
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  PAID
+                </div>
+              </div>
+
+              {/* Amount */}
+              <div
+                style={{
+                  textAlign: 'center',
+                  marginBottom: 24,
+                  padding: '16px 0',
+                  borderTop: `1px solid ${borderSubtle}`,
+                  borderBottom: `1px solid ${borderSubtle}`,
+                }}
+              >
+                <div style={{ fontSize: 11, color: textSecondary, marginBottom: 4 }}>Amount Paid</div>
+                <div style={{ fontSize: 32, fontWeight: 800, color: textPrimary }}>
+                  ₹{paymentReceipt.amount_inr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </div>
+                <div style={{ fontSize: 12, color: textSecondary, marginTop: 2 }}>INR</div>
+              </div>
+
+              {/* Details rows */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 24 }}>
+                {[
+                  {
+                    label: 'Plan',
+                    value: paymentReceipt.plan_name,
+                    highlight: true,
+                  },
+                  {
+                    label: 'Date & Time',
+                    value: new Date(paymentReceipt.paid_at).toLocaleString('en-IN', {
+                      day: '2-digit',
+                      month: 'short',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    }),
+                  },
+                  {
+                    label: 'Valid Until',
+                    value: new Date(paymentReceipt.valid_until).toLocaleDateString('en-IN', {
+                      day: '2-digit',
+                      month: 'short',
+                      year: 'numeric',
+                    }),
+                  },
+                  {
+                    label: 'Payment ID',
+                    value: paymentReceipt.payment_id,
+                    mono: true,
+                  },
+                  {
+                    label: 'Order ID',
+                    value: paymentReceipt.order_id,
+                    mono: true,
+                  },
+                  {
+                    label: 'Payment Method',
+                    value: 'Razorpay',
+                  },
+                ].map(({ label, value, highlight, mono }) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                    <span style={{ fontSize: 12, color: textSecondary, flexShrink: 0 }}>{label}</span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: highlight ? 700 : 500,
+                        color: highlight ? accentBrand : textPrimary,
+                        fontFamily: mono ? 'monospace' : undefined,
+                        wordBreak: 'break-all',
+                        textAlign: 'right',
+                      }}
+                    >
+                      {value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Close button */}
+              <button
+                type="button"
+                onClick={() => setPaymentReceipt(null)}
+                style={{
+                  width: '100%',
+                  padding: '11px 0',
+                  borderRadius: 12,
+                  border: 'none',
+                  background: accentBrand,
+                  color: '#0B1120',
+                  fontSize: 14,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

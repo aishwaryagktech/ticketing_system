@@ -247,6 +247,7 @@ model Ticket {
   sla_paused_duration  Int          @default(0)
   sla_breached         Boolean      @default(false)
   escalation_level     Int          @default(0)
+  escalated_by         String?
   resolved_at          DateTime?
   closed_at            DateTime?
   reopen_deadline      DateTime?

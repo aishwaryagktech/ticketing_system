@@ -33,6 +33,13 @@ const envSchema = z.object({
   MAILGUN_API_KEY: z.string().optional(),
   MAILGUN_DOMAIN: z.string().optional(),
 
+  // Gmail API (OAuth) for email thread syncing/sending
+  GMAIL_CLIENT_ID: z.string().optional(),
+  GMAIL_CLIENT_SECRET: z.string().optional(),
+  GMAIL_REDIRECT_URI: z.string().optional(),
+  // Which authorized inbox to use when syncing (users.getProfile email)
+  GMAIL_SYNC_ACCOUNT: z.string().optional(),
+
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),

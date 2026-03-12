@@ -38,6 +38,7 @@ const ConversationSchema = new Schema({
   session_id:        { type: String, default: null, index: true },
   ticket_id:         { type: String, default: null, index: true },
   type:              { type: String, enum: ['ticket', 'bot'] },
+  gmail_thread_id:   { type: String, default: null },
   messages:    { type: [MessageSchema], default: [] },
   bot_session: { type: BotSessionSchema, default: null },
   created_at:  { type: Date, default: Date.now },

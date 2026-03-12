@@ -19,6 +19,8 @@ type TicketListItem = {
   sla_deadline: string | null;
   sla_breached: boolean;
   updated_at: string;
+  escalated_by?: string | null;
+  escalated_by_name?: string | null;
 };
 
 const STATUS_ORDER = ['new_ticket', 'open', 'in_progress', 'pending_user', 'resolved', 'closed'] as const;
@@ -32,8 +34,17 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 export default function AgentDashboardPage() {
-  const { user } = useAuthStore();
+  const { user, clearAuth, hydrate } = useAuthStore();
   const router = useRouter();
+
+  useEffect(() => {
+    hydrate();
+  }, [hydrate]);
+
+  const handleLogout = () => {
+    clearAuth();
+    if (typeof window !== 'undefined') window.location.href = '/login';
+  };
   const [tenantProductId, setTenantProductId] = useState<string>('');
   const [products, setProducts] = useState<Array<{ id: string; name: string; support_level: string }>>([]);
   const [unassignedItems, setUnassignedItems] = useState<TicketListItem[]>([]);
@@ -84,7 +95,7 @@ export default function AgentDashboardPage() {
     setError('');
     try {
       const base = { take: 50, tenant_product_id: tenantProductId };
-      const baseAll = { take: 500, tenant_product_id: tenantProductId };
+      const baseAll = { take: 500, tenant_product_id: tenantProductId, assigned: 'me' };
       const [unassignedRes, assignedRes, breachedRes, allRes] = await Promise.all([
         ticketApi.list({ ...base, assigned: 'unassigned' }),
         ticketApi.list({ ...base, assigned: 'me' }),
@@ -224,26 +235,60 @@ export default function AgentDashboardPage() {
       }}
     >
       <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, gap: 12, flexWrap: 'wrap' }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 900 }}>{title}</div>
             <div style={{ fontSize: 12, color: '#94A3B8' }}>Agent dashboard: queues, SLA and product filters.</div>
           </div>
-          <button
-            type="button"
-            onClick={() => fetchAll()}
-            style={{
-              padding: '8px 12px',
-              borderRadius: 10,
-              border: '1px solid rgba(148,163,184,0.35)',
-              background: 'rgba(15,23,42,0.75)',
-              color: '#E5E7EB',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            Refresh
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: '#94A3B8' }} title={user?.email}>
+              {user?.name || user?.email || 'Agent'}
+            </span>
+            <Link
+              href="/agent/queue"
+              style={{
+                padding: '8px 12px',
+                borderRadius: 10,
+                border: '1px solid rgba(148,163,184,0.35)',
+                background: 'rgba(15,23,42,0.75)',
+                color: '#E5E7EB',
+                fontSize: 12,
+                textDecoration: 'none',
+              }}
+            >
+              Next tickets
+            </Link>
+            <button
+              type="button"
+              onClick={() => fetchAll()}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 10,
+                border: '1px solid rgba(148,163,184,0.35)',
+                background: 'rgba(15,23,42,0.75)',
+                color: '#E5E7EB',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              style={{
+                padding: '8px 12px',
+                borderRadius: 10,
+                border: '1px solid rgba(248,113,113,0.4)',
+                background: 'rgba(248,113,113,0.15)',
+                color: '#FCA5A5',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              Log out
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 16 }}>
@@ -314,7 +359,7 @@ export default function AgentDashboardPage() {
 
         {/* Tickets by status — bar chart */}
         <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 700, marginBottom: 8 }}>Tickets by status</div>
+          <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 700, marginBottom: 8 }}>My tickets by status</div>
           <div
             style={{
               border: '1px solid rgba(148,163,184,0.35)',
@@ -484,18 +529,23 @@ export default function AgentDashboardPage() {
               assignedItems.map((t) => {
                 const slaText = formatSlaCell(t);
                 const isBreached = slaText.startsWith('Breached');
+                const escalatedByName = (t as any).escalated_by_name;
                 return (
                   <div
                     key={t.id}
                     style={{
-                      display: 'grid',
-                      gridTemplateColumns: '90px 1fr 72px 56px 90px',
-                      padding: '8px 10px',
                       borderTop: '1px solid rgba(148,163,184,0.25)',
-                      fontSize: 12,
-                      alignItems: 'center',
                     }}
                   >
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '90px 1fr 72px 56px 90px',
+                        padding: '8px 10px',
+                        fontSize: 12,
+                        alignItems: 'center',
+                      }}
+                    >
                     <Link href={`/agent/tickets/${t.id}`} style={{ color: '#FACC15', textDecoration: 'none', fontWeight: 800 }}>
                       {t.ticket_number}
                     </Link>
@@ -505,6 +555,12 @@ export default function AgentDashboardPage() {
                     <div style={{ color: isBreached ? '#FCA5A5' : '#94A3B8', fontSize: 11, fontWeight: 600 }} title={t.sla_deadline ? new Date(t.sla_deadline).toLocaleString() : ''}>
                       {slaText}
                     </div>
+                    </div>
+                    {escalatedByName && (
+                      <div style={{ padding: '2px 10px 6px', fontSize: 10, color: '#94A3B8', background: 'rgba(59,130,246,0.1)', borderLeft: '3px solid rgba(59,130,246,0.5)' }}>
+                        Escalated by {escalatedByName}
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -551,7 +607,25 @@ export default function AgentDashboardPage() {
         </div>
 
         {/* Center modal for unassigned ticket actions */}
-        {pendingTicketId && (
+        {pendingTicketId && (() => {
+          const pendingTicket =
+            unassignedItems.find((t) => t.id === pendingTicketId) ||
+            assignedItems.find((t) => t.id === pendingTicketId) ||
+            breachedItems.find((t) => t.id === pendingTicketId) ||
+            allItemsForStatus.find((t) => t.id === pendingTicketId);
+          const priority = pendingTicket ? String(pendingTicket.priority || 'p2').toLowerCase() : 'p2';
+          const isP1 = priority === 'p1';
+          const agentRole = typeof user?.role === 'string' ? user.role.toLowerCase() : '';
+          const isL1 = agentRole === 'l1_agent';
+          const isL3 = agentRole === 'l3_agent';
+          const isAdmin = agentRole === 'tenant_admin' || agentRole === 'super_admin';
+          const canAssignToMe = isAdmin || (isP1 ? isL3 : isL1);
+          const assignToMeReason = canAssignToMe
+            ? null
+            : isP1
+              ? 'P1 tickets can only be assigned to L3 agents.'
+              : 'Non-P1 tickets can only be assigned to L1 agents.';
+          return (
           <div
             style={{
               position: 'fixed',
@@ -580,6 +654,11 @@ export default function AgentDashboardPage() {
                 Do you want to <span style={{ fontWeight: 700, color: '#FACC15' }}>assign this ticket to yourself</span> and open it, or just
                 view it without assignment?
               </div>
+              {assignToMeReason && (
+                <div style={{ fontSize: 11, color: '#FCA5A5', marginBottom: 12 }}>
+                  {assignToMeReason}
+                </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                 <button
                   type="button"
@@ -600,16 +679,18 @@ export default function AgentDashboardPage() {
                 <button
                   type="button"
                   onClick={handleAssignAndOpen}
-                  disabled={pendingActionLoading}
+                  disabled={pendingActionLoading || !canAssignToMe}
+                  title={assignToMeReason || undefined}
                   style={{
                     padding: '8px 14px',
                     borderRadius: 999,
                     border: 'none',
-                    background: '#FACC15',
-                    color: '#0F172A',
+                    background: canAssignToMe ? '#FACC15' : 'rgba(100,116,139,0.4)',
+                    color: canAssignToMe ? '#0F172A' : '#64748B',
                     fontSize: 12,
                     fontWeight: 900,
-                    cursor: pendingActionLoading ? 'default' : 'pointer',
+                    cursor: pendingActionLoading || !canAssignToMe ? 'not-allowed' : 'pointer',
+                    opacity: canAssignToMe ? 1 : 0.9,
                   }}
                 >
                   {pendingActionLoading ? 'Assigning…' : 'Assign to me & open'}
@@ -617,7 +698,8 @@ export default function AgentDashboardPage() {
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

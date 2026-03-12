@@ -4,6 +4,7 @@ import React, { useEffect, useState, type CSSProperties, type FormEvent } from '
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
+import { useAuthStore } from '@/store/auth.store';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -79,6 +80,8 @@ export default function LoginPage() {
         return;
       }
 
+      const { setAuth } = useAuthStore.getState();
+      setAuth(data.user, data.token);
       localStorage.setItem('gkt_token', data.token);
       if (data.refresh_token) localStorage.setItem('gkt_refresh_token', data.refresh_token);
       localStorage.setItem('gkt_user', JSON.stringify(data.user));

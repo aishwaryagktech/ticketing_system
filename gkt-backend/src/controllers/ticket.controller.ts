@@ -10,6 +10,7 @@ import {
   shouldBeBreached,
   markBreachedTickets,
 } from '../services/sla.service';
+import { env } from '../config/env';
 import { decryptPII } from '../utils/encrypt';
 
 // GET /api/tickets
@@ -64,6 +65,7 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
         priority: true,
         escalation_level: true,
         assigned_to: true,
+        escalated_by: true,
         tenant_product_id: true,
         sla_deadline: true,
         sla_breached: true,
@@ -72,7 +74,53 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
       },
     });
 
-    res.json({ items: tickets, take, skip });
+    const escalatedByIds = [...new Set(tickets.map((t: any) => t.escalated_by).filter(Boolean))] as string[];
+    let escalatedByNames: Record<string, string> = {};
+    if (escalatedByIds.length > 0) {
+      try {
+        const users = await prisma.user.findMany({
+          where: { id: { in: escalatedByIds } },
+          select: { id: true, first_name: true, last_name: true, email: true },
+        });
+        for (const u of users) {
+          const parts: string[] = [];
+          if (u.first_name) {
+            try {
+              parts.push(decryptPII(u.first_name));
+            } catch {
+              parts.push(u.first_name);
+            }
+          }
+          if (u.last_name) {
+            try {
+              parts.push(decryptPII(u.last_name));
+            } catch {
+              parts.push(u.last_name);
+            }
+          }
+          if (parts.length) {
+            escalatedByNames[u.id] = parts.join(' ').trim();
+          } else if (u.email) {
+            try {
+              escalatedByNames[u.id] = decryptPII(u.email);
+            } catch {
+              escalatedByNames[u.id] = u.email;
+            }
+          } else {
+            escalatedByNames[u.id] = u.id;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const items = tickets.map((t: any) => ({
+      ...t,
+      escalated_by_name: t.escalated_by ? escalatedByNames[t.escalated_by] ?? null : null,
+    }));
+
+    res.json({ items, take, skip });
   } catch (e) {
     console.error('listTickets error:', e);
     res.status(500).json({ error: 'Failed to list tickets' });
@@ -117,28 +165,54 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
         include: { comments: { orderBy: { created_at: 'asc' } } },
       });
     }
-    // Enrich with resolved agent email for web_form flows (From: in composer)
-    let agentEmailResolved: string | null = null;
-    if (ticket.assigned_to) {
+    // For web_form tickets, the outbound sender should match the configured mail provider sender.
+    // If Gmail sync is configured, show the Gmail inbox address; otherwise fall back to product/SendGrid sender.
+    let agentEmailResolved: string | null =
+      env.GMAIL_SYNC_ACCOUNT ||
+      ticket.product?.email_sender_address ||
+      env.SENDGRID_FROM_EMAIL ||
+      null;
+    let escalatedByName: string | null = null;
+    const escalatedBy = (ticket as any).escalated_by;
+    if (escalatedBy) {
       try {
-        const agent = await prisma.user.findUnique({
-          where: { id: ticket.assigned_to },
-          select: { email: true },
+        const escalator = await prisma.user.findUnique({
+          where: { id: escalatedBy },
+          select: { first_name: true, last_name: true, email: true },
         });
-        if (agent?.email) {
-          try {
-            agentEmailResolved = decryptPII(agent.email);
-          } catch {
-            agentEmailResolved = agent.email;
+        if (escalator) {
+          const parts: string[] = [];
+          if (escalator.first_name) {
+            try {
+              parts.push(decryptPII(escalator.first_name));
+            } catch {
+              parts.push(escalator.first_name);
+            }
+          }
+          if (escalator.last_name) {
+            try {
+              parts.push(decryptPII(escalator.last_name));
+            } catch {
+              parts.push(escalator.last_name);
+            }
+          }
+          if (parts.length) escalatedByName = parts.join(' ').trim();
+          else if (escalator.email) {
+            try {
+              escalatedByName = decryptPII(escalator.email);
+            } catch {
+              escalatedByName = escalator.email;
+            }
           }
         }
       } catch {
-        // ignore lookup failures
+        // ignore
       }
     }
     res.json({
       ...ticket,
       agent_email: agentEmailResolved,
+      escalated_by_name: escalatedByName,
     });
   } catch (e) {
     console.error('getTicket error:', e);
@@ -281,6 +355,76 @@ export async function createTicket(req: ApiKeyRequest, res: Response): Promise<v
   }
 }
 
+// GET /api/tickets/:id/escalation-history
+export async function getTicketEscalationHistory(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  const { id } = req.params;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant context required' });
+    return;
+  }
+  try {
+    const ticket = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId }, select: { id: true } });
+    if (!ticket) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    const logs = await prisma.escalationLog.findMany({
+      where: { ticket_id: id },
+      orderBy: { created_at: 'asc' },
+    });
+    const userIds = [...new Set(logs.map((l) => l.triggered_by).filter(Boolean))];
+    let names: Record<string, string> = {};
+    if (userIds.length > 0) {
+      const users = await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, first_name: true, last_name: true, email: true },
+      });
+      for (const u of users) {
+        const parts: string[] = [];
+        if (u.first_name) {
+          try {
+            parts.push(decryptPII(u.first_name));
+          } catch {
+            parts.push(u.first_name);
+          }
+        }
+        if (u.last_name) {
+          try {
+            parts.push(decryptPII(u.last_name));
+          } catch {
+            parts.push(u.last_name);
+          }
+        }
+        if (parts.length) {
+          names[u.id] = parts.join(' ').trim();
+        } else if (u.email) {
+          try {
+            names[u.id] = decryptPII(u.email);
+          } catch {
+            names[u.id] = u.email;
+          }
+        } else {
+          names[u.id] = u.id;
+        }
+      }
+    }
+    const items = logs.map((log) => ({
+      from_level: log.from_level,
+      to_level: log.to_level,
+      trigger_reason: log.trigger_reason,
+      triggered_by: log.triggered_by,
+      triggered_by_name: names[log.triggered_by] ?? null,
+      actor_id: log.actor_id,
+      created_at: log.created_at,
+    }));
+    res.json({ items });
+  } catch (e) {
+    console.error('getTicketEscalationHistory error:', e);
+    res.status(500).json({ error: 'Failed to load escalation history' });
+  }
+}
+
 // PATCH /api/tickets/:id
 export async function updateTicket(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
@@ -315,6 +459,12 @@ export async function updateTicket(req: AuthRequest, res: Response): Promise<voi
     }
 
     const data: any = { ...allowed };
+    if (typeof allowed.assigned_to === 'string' && allowed.assigned_to !== userId) {
+      data.escalated_by = userId;
+    }
+    if (allowed.assigned_to === null) {
+      data.escalated_by = null;
+    }
 
     // If priority is changing, recompute SLA deadline based on new priority
     if (typeof allowed.priority === 'string' && allowed.priority !== t.priority) {
@@ -336,6 +486,29 @@ export async function updateTicket(req: AuthRequest, res: Response): Promise<voi
     }
 
     const updated = await prisma.ticket.update({ where: { id }, data });
+
+    const fromLevel = Number(t.escalation_level ?? 0);
+    const toLevel = typeof data.escalation_level === 'number' ? data.escalation_level : fromLevel;
+    const levelChanged = toLevel !== fromLevel;
+    const reassigned = (typeof data.assigned_to === 'string' || data.assigned_to === null) && data.assigned_to !== (t.assigned_to ?? null);
+    if (levelChanged || reassigned) {
+      try {
+        await prisma.escalationLog.create({
+          data: {
+            product_id: t.product_id,
+            ticket_id: id,
+            from_level: fromLevel,
+            to_level: toLevel,
+            trigger_reason: 'manual',
+            triggered_by: userId,
+            actor_id: typeof data.assigned_to === 'string' ? data.assigned_to : null,
+          },
+        });
+      } catch (logErr) {
+        console.warn('updateTicket: EscalationLog create failed (continuing):', (logErr as Error).message);
+      }
+    }
+
     res.json(updated);
   } catch (e) {
     console.error('updateTicket error:', e);
@@ -403,9 +576,12 @@ export async function publicSupportSuggest(req: ApiKeyRequest, res: Response): P
 }
 
 // PATCH /api/tickets/:id/assign
+// Priority-based assignment: P1 → only L3 agents; P2/P3/P4 → only L1 agents. Admins can always assign.
+// Role comes from JWT (mapped from role_id -> roles.name: l1_agent, l2_agent, l3_agent, tenant_admin).
 export async function assignTicket(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
   const userId = req.user?.id;
+  const role = req.user?.role;
   const { id } = req.params;
   if (!tenantId || !userId) {
     res.status(403).json({ error: 'Tenant context required' });
@@ -413,31 +589,48 @@ export async function assignTicket(req: AuthRequest, res: Response): Promise<voi
   }
 
   try {
-    // Try to atomically claim the ticket only if it is currently unassigned
-    const result = await prisma.ticket.updateMany({
-      where: { id, tenant_id: tenantId, assigned_to: null },
-      data: { assigned_to: userId },
-    });
+    const existing = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId } });
+    if (!existing) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
 
-    if (result.count === 0) {
-      // Either ticket does not exist for this tenant or it was already assigned
-      const existing = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId } });
-      if (!existing) {
-        res.status(404).json({ error: 'Not found' });
+    const priority = String(existing.priority || 'p2').toLowerCase();
+    const isP1 = priority === 'p1';
+    const isL1 = role === 'l1_agent';
+    const isL3 = role === 'l3_agent';
+    const isAdmin = role === 'tenant_admin' || role === 'super_admin';
+
+    if (isP1) {
+      if (!isL3 && !isAdmin) {
+        res.status(403).json({
+          error: 'P1 tickets can only be assigned to L3 agents.',
+        });
         return;
       }
-
-      if (existing.assigned_to && existing.assigned_to !== userId) {
-        res.status(409).json({ error: 'already_assigned' });
+    } else {
+      if (!isL1 && !isAdmin) {
+        res.status(403).json({
+          error: 'Non-P1 tickets can only be assigned to L1 agents. This ticket has priority ' + priority.toUpperCase() + '.',
+        });
         return;
       }
+    }
 
-      // Ticket is already assigned to this user; return current state
+    if (existing.assigned_to && existing.assigned_to !== userId) {
+      res.status(409).json({ error: 'already_assigned' });
+      return;
+    }
+
+    if (existing.assigned_to === userId) {
       res.json(existing);
       return;
     }
 
-    const updated = await prisma.ticket.findFirst({ where: { id, tenant_id: tenantId } });
+    const updated = await prisma.ticket.update({
+      where: { id },
+      data: { assigned_to: userId },
+    });
     res.json(updated);
   } catch (e) {
     console.error('assignTicket error:', e);
@@ -511,8 +704,10 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
       return;
     }
 
-    // Prefer Mongo Conversation thread when available
-    if (ticket.tenant_product_id) {
+    // For bot/widget sources: prefer the Mongo bot conversation thread.
+    // web_form tickets go directly to the email thread path below so that
+    // Gmail-synced messages (stored in type:'ticket') are always surfaced.
+    if (ticket.source !== 'web_form' && ticket.tenant_product_id) {
       try {
         const convo = await Conversation.findOne(
           { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'bot' },
@@ -534,21 +729,87 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
       }
     }
 
-    // Fallback for non-bot tickets.
+    // Email thread for web_form: prefer Mongo Conversation (type 'ticket') when present
+    // (this includes Gmail-synced messages). Falls back to Postgres comments on first load.
     if (ticket.source === 'web_form') {
-      // For web_form tickets, build the thread from non-internal TicketComments (email thread).
+      const emailConvo = ticket.tenant_product_id
+        ? await Conversation.findOne(
+            { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'ticket' },
+          ).lean()
+        : null;
+      if (emailConvo && Array.isArray(emailConvo.messages) && emailConvo.messages.length > 0) {
+        const sorted = (emailConvo.messages as any[])
+          .map((m: any) => ({
+            id: m.message_id,
+            from: m.author_type === 'agent' ? 'agent' : 'user',
+            text: m.body,
+            created_at: m.created_at ? new Date(m.created_at) : new Date(),
+          }))
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        const originalFirst = sorted[0]?.from === 'user' && sorted[0]?.id === 'ticket-original';
+        const msgs = originalFirst
+          ? sorted
+          : [
+              { id: 'ticket-original', from: 'user' as const, text: (ticket.description || ticket.subject || '').trim() || '—', created_at: ticket.created_at },
+              ...sorted,
+            ];
+        res.json({ messages: msgs });
+        return;
+      }
+
       const comments = await prisma.ticketComment.findMany({
         where: { ticket_id: ticket.id, is_internal: false },
         orderBy: { created_at: 'asc' },
       });
 
       const createdByLower = (ticket.created_by || '').toLowerCase();
-      const msgs = comments.map((c) => ({
+      const firstMsg = {
+        id: 'ticket-original',
+        from: 'user' as const,
+        text: (ticket.description || ticket.subject || '').trim() || '—',
+        created_at: ticket.created_at,
+      };
+      const commentMsgs = comments.map((c) => ({
         id: c.id,
         from: (c.author_id || '').toLowerCase() === createdByLower ? ('user' as const) : ('agent' as const),
         text: c.body,
         created_at: c.created_at,
       }));
+      const msgs = [firstMsg, ...commentMsgs];
+
+      if (ticket.tenant_product_id) {
+        try {
+          const messageDocs = msgs.map((m, i) => ({
+            message_id: m.id,
+            author_type: m.from,
+            author_id: m.from === 'user' ? (ticket.created_by || 'user') : 'agent',
+            author_name: m.from === 'agent' ? 'Agent' : 'Requester',
+            body: m.text,
+            is_internal: false,
+            created_at: m.created_at,
+          }));
+          await Conversation.updateOne(
+            {
+              tenant_product_id: ticket.tenant_product_id,
+              ticket_id: ticket.id,
+              type: 'ticket',
+            },
+            {
+              $setOnInsert: {
+                tenant_product_id: ticket.tenant_product_id,
+                tenant_id: ticket.tenant_id ?? null,
+                ticket_id: ticket.id,
+                type: 'ticket',
+                created_at: new Date(),
+              },
+              $set: { updated_at: new Date(), messages: messageDocs },
+            },
+            { upsert: true, strict: false },
+          );
+        } catch (e) {
+          console.warn('getTicketConversation: failed to sync email thread to Mongo:', (e as Error).message);
+        }
+      }
 
       res.json({ messages: msgs });
       return;
