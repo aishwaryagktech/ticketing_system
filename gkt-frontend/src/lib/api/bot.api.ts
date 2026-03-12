@@ -1,10 +1,17 @@
 import apiClient from './client';
 
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+
 export const botApi = {
-  welcomeMessage: (tenant_id: string, tenant_product_id?: string) =>
-    apiClient.get<{ message: string }>('/api/bot/welcome-message', {
-      params: { tenant_id, tenant_product_id },
-    }),
+  welcomeMessage: async (tenant_id: string, tenant_product_id?: string) => {
+    const params = new URLSearchParams({ tenant_id });
+    if (tenant_product_id) params.set('tenant_product_id', tenant_product_id);
+    const res = await fetch(`${BASE_URL}/api/bot/welcome-message?${params}`, {
+      headers: { Accept: 'application/json' },
+    });
+    const data = await res.json();
+    return { data } as { data: { message: string } };
+  },
   chat: (args: {
     message: string;
     tenant_id: string;

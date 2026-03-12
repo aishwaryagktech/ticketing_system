@@ -55,6 +55,7 @@ function TicketSettingsInline(props: TicketSettingsInlineProps) {
   const [assignmentRule, setAssignmentRule] = useState('round_robin');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   useEffect(() => {
     setMounted(true);
@@ -221,6 +222,7 @@ function TicketSettingsInline(props: TicketSettingsInlineProps) {
         onClick={async () => {
           setError('');
           setSaving(true);
+          setSuccess('');
           try {
             const list = categories
               .split(',')
@@ -232,8 +234,7 @@ function TicketSettingsInline(props: TicketSettingsInlineProps) {
               categories: list.length ? list : ['Billing', 'Technical', 'Account'],
               assignment_rule: assignmentRule,
             });
-            await onboardingApi.setStep('sla');
-            onNext();
+            setSuccess('Ticket settings saved.');
           } catch (e: any) {
             setError(e?.message || 'Failed to save ticket settings');
           } finally {
@@ -252,8 +253,9 @@ function TicketSettingsInline(props: TicketSettingsInlineProps) {
           alignSelf: 'flex-start',
         }}
       >
-        {saving ? 'Saving...' : 'Save & Continue to SLA'}
+        {saving ? 'Saving...' : 'Save'}
       </button>
+      {success && <div style={{ marginTop: 8, fontSize: 12, color: '#4ADE80' }}>{success}</div>}
     </>
   );
 }
@@ -275,6 +277,7 @@ function SlaInline(props: SlaInlineProps) {
   const [mounted, setMounted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [tenantProductId, setTenantProductId] = useState<string>(initialTenantProductId || '');
   const [rows, setRows] = useState<
     Array<{ priority: 'p1' | 'p2' | 'p3' | 'p4'; response: number; resolution: number }>
@@ -468,8 +471,7 @@ function SlaInline(props: SlaInlineProps) {
                 resolution_time_mins: Number(r.resolution),
               }))
             );
-            await onboardingApi.setStep('escalation');
-            onNext();
+            setSuccess('SLA configuration saved.');
           } catch (e: any) {
             setError(e?.message || 'Failed to save SLA. Please check values and try again.');
           } finally {
@@ -488,8 +490,9 @@ function SlaInline(props: SlaInlineProps) {
           alignSelf: 'flex-start',
         }}
       >
-        {saving ? 'Saving...' : 'Save & Continue to Escalation'}
+        {saving ? 'Saving...' : 'Save'}
       </button>
+      {success && <div style={{ marginTop: 8, fontSize: 12, color: '#4ADE80' }}>{success}</div>}
     </>
   );
 }
@@ -520,6 +523,7 @@ function EscalationInline(props: EscalationInlineProps) {
   const [tenantProductId, setTenantProductId] = useState<string>(initialTenantProductId || (products[0]?.id ?? ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [rules, setRules] = useState<
     Array<{
       id?: string;
@@ -777,8 +781,7 @@ function EscalationInline(props: EscalationInlineProps) {
           setError('');
           try {
             await onboardingApi.putEscalation(tenantProductId || '', rules);
-            await onboardingApi.setStep('kb');
-            onNext();
+            setSuccess('Escalation rules saved.');
           } catch (e: any) {
             setError(e?.message || 'Failed to save escalation rules');
           } finally {
@@ -797,8 +800,9 @@ function EscalationInline(props: EscalationInlineProps) {
           alignSelf: 'flex-start',
         }}
       >
-        {saving ? 'Saving...' : 'Save & Continue to Knowledge Base'}
+        {saving ? 'Saving...' : 'Save'}
       </button>
+      {success && <div style={{ marginTop: 8, fontSize: 12, color: '#4ADE80' }}>{success}</div>}
     </>
   );
 }
@@ -1425,33 +1429,6 @@ function KbInline(props: KbInlineProps) {
         </div>
       )}
 
-      <button
-        type="button"
-        disabled={saving}
-        onClick={async () => {
-          setSaving(true);
-          try {
-            await onboardingApi.setStep('ai_bot');
-            onNext();
-          } finally {
-            setSaving(false);
-          }
-        }}
-        style={{
-          marginTop: 6,
-          padding: '10px 20px',
-          borderRadius: 10,
-          background: accentBrand,
-          color: '#000',
-          border: 'none',
-          fontWeight: 700,
-          fontSize: 13,
-          cursor: saving ? 'not-allowed' : 'pointer',
-          alignSelf: 'flex-start',
-        }}
-      >
-        {saving ? 'Saving...' : 'Continue to AI Bot'}
-      </button>
     </>
   );
 }
@@ -1473,6 +1450,7 @@ function AiBotInline(props: AiBotInlineProps) {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   const [tenantProducts, setTenantProducts] = useState<
     Array<{ id: string; name: string; l0_provider?: string | null; l0_model?: string | null }>
@@ -1697,8 +1675,7 @@ function AiBotInline(props: AiBotInlineProps) {
             if (tenantProductId && providerName && model) {
               await onboardingApi.setL0Model(tenantProductId, providerName, model);
             }
-            await onboardingApi.setStep('channels');
-            onNext();
+            setSuccess('AI bot settings saved.');
           } catch (e: any) {
             setError(e?.message || 'Failed to save AI bot settings');
           } finally {
@@ -1717,8 +1694,9 @@ function AiBotInline(props: AiBotInlineProps) {
           alignSelf: 'flex-start',
         }}
       >
-        {saving ? 'Saving...' : 'Continue to Channels'}
+        {saving ? 'Saving...' : 'Save'}
       </button>
+      {success && <div style={{ marginTop: 8, fontSize: 12, color: '#4ADE80' }}>{success}</div>}
     </>
   );
 }
@@ -1740,6 +1718,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
   const [mounted, setMounted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [chatEnabled, setChatEnabled] = useState(true);
   const [chatPosition, setChatPosition] = useState<'bottom-right' | 'bottom-left'>('bottom-right');
   const [chatPrimaryColor, setChatPrimaryColor] = useState('#FACC15');
@@ -2157,8 +2136,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
               support_email: supportEmail || null,
               default_product_id: tenantProductIdForSnippet !== 'PRODUCT_ID' ? tenantProductIdForSnippet : null,
             });
-            await onboardingApi.setStep('branding');
-            onNext();
+            setSuccess('Channel settings saved.');
           } catch (e: any) {
             setError(e?.message || 'Failed to save support channel settings');
           } finally {
@@ -2177,8 +2155,9 @@ function ChannelsInline(props: ChannelsInlineProps) {
           alignSelf: 'flex-start',
         }}
       >
-        {saving ? 'Saving...' : 'Continue to Branding'}
+        {saving ? 'Saving...' : 'Save'}
       </button>
+      {success && <div style={{ marginTop: 8, fontSize: 12, color: '#4ADE80' }}>{success}</div>}
     </>
   );
 }
@@ -2458,9 +2437,7 @@ function BrandingInline(props: BrandingInlineProps) {
               primary_color: primaryColor,
               custom_domain: customDomain || null,
             });
-            await onboardingApi.setStep('notifications');
             setSuccess('Branding saved.');
-            onNext();
           } catch (e: any) {
             setError(e?.message || 'Failed to save branding');
           } finally {
@@ -2479,7 +2456,7 @@ function BrandingInline(props: BrandingInlineProps) {
           alignSelf: 'flex-start',
         }}
       >
-        {saving ? 'Saving...' : 'Save & Continue to Notifications'}
+        {saving ? 'Saving...' : 'Save'}
       </button>
     </>
   );
@@ -2746,7 +2723,7 @@ export default function TenantDashboardPage() {
           background: isDark ? '#020617' : '#FFFFFF',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 6px 4px 4px' }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 6px 4px 4px', textDecoration: 'none', color: 'inherit' }}>
           <div
             style={{
               width: 32,
@@ -2772,7 +2749,7 @@ export default function TenantDashboardPage() {
             <span style={{ fontSize: 13, fontWeight: 700 }}>GKT AI Ticketing</span>
             <span style={{ fontSize: 11, color: textSecondary }}>Modern AI workspace for education teams</span>
           </div>
-        </div>
+        </Link>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span
@@ -2859,12 +2836,12 @@ export default function TenantDashboardPage() {
           </span>
           {[
             { key: 'configuration-hub', label: 'Setup status' },
-            { key: 'agents', label: 'Agents' },
-            { key: 'ticket-settings', label: 'Ticket settings' },
-            { key: 'sla', label: 'SLA configuration' },
-            { key: 'escalation', label: 'Escalation rules' },
+            { key: 'agents', label: 'Agents assigned' },
             { key: 'kb', label: 'Knowledge base' },
             { key: 'ai-bot', label: 'L0 AI bot' },
+            { key: 'sla', label: 'SLA configuration' },
+            { key: 'escalation', label: 'Escalation rules' },
+            { key: 'ticket-settings', label: 'Ticket settings' },
             { key: 'channels', label: 'Support channels' },
             { key: 'branding', label: 'Branding & white-label' },
           ].map((item) => {

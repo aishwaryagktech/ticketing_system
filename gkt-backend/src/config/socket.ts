@@ -30,6 +30,10 @@ export function initSocketServer(httpServer: HttpServer): Server {
       socket.join(`ticket:${ticketId}`);
     });
 
+    socket.on('leave:ticket', (ticketId: string) => {
+      socket.leave(`ticket:${ticketId}`);
+    });
+
     socket.on('join:admin', (productId: string) => {
       socket.join(`admin:${productId}`);
     });

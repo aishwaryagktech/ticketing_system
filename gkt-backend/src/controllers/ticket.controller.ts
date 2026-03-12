@@ -12,6 +12,7 @@ import {
 } from '../services/sla.service';
 import { env } from '../config/env';
 import { decryptPII } from '../utils/encrypt';
+import { getIO } from '../config/socket';
 
 // GET /api/tickets
 export async function listTickets(req: AuthRequest, res: Response): Promise<void> {
@@ -461,6 +462,9 @@ export async function updateTicket(req: AuthRequest, res: Response): Promise<voi
     const data: any = { ...allowed };
     if (typeof allowed.assigned_to === 'string' && allowed.assigned_to !== userId) {
       data.escalated_by = userId;
+      // Reset to 'open' so the new agent must click Start — this also triggers the
+      // correct showStartInsteadOfReply UI and delays the WebSocket connection.
+      if (!allowed.status) data.status = 'open';
     }
     if (allowed.assigned_to === null) {
       data.escalated_by = null;
@@ -506,6 +510,45 @@ export async function updateTicket(req: AuthRequest, res: Response): Promise<voi
         });
       } catch (logErr) {
         console.warn('updateTicket: EscalationLog create failed (continuing):', (logErr as Error).message);
+      }
+
+      // Emit real-time escalation event so chatbot and agents see it instantly
+      try {
+        const resolveUserName = async (uid: string | null | undefined): Promise<string | null> => {
+          if (!uid) return null;
+          const u = await prisma.user.findUnique({ where: { id: uid }, select: { first_name: true, last_name: true, email: true } });
+          if (!u) return null;
+          const parts = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
+          if (parts) return parts;
+          try { return decryptPII(u.email || ''); } catch { return u.email || null; }
+        };
+        const escalatedByName = await resolveUserName(userId);
+        const assignedToName = typeof data.assigned_to === 'string' ? await resolveUserName(data.assigned_to) : null;
+        getIO().to(`ticket:${id}`).emit('ticket:escalated', {
+          ticket_id: id,
+          escalated_by_name: escalatedByName,
+          assigned_to_name: assignedToName,
+          to_level: toLevel,
+        });
+
+        // Persist the escalation as a system message so it survives page reloads
+        const tpId = (t as any).tenant_product_id;
+        if (tpId) {
+          const convType = (t as any).source === 'web_form' ? 'ticket' : 'bot';
+          const toName = assignedToName ? ` to ${assignedToName}` : '';
+          const sysBody = `${escalatedByName || 'Agent'} transferred this chat${toName}. Please wait while the next agent connects.`;
+          await Conversation.updateOne(
+            { tenant_product_id: tpId, ticket_id: id, type: convType },
+            {
+              $setOnInsert: { tenant_product_id: tpId, tenant_id: tenantId, ticket_id: id, type: convType, created_at: new Date() },
+              $set: { updated_at: new Date() },
+              $push: { messages: { message_id: `sys-esc-${Date.now()}`, author_type: 'system', author_name: 'System', body: sysBody, is_internal: false, created_at: new Date() } },
+            },
+            { upsert: true, strict: false },
+          ).catch((e: Error) => console.warn('updateTicket: failed to save system message:', e.message));
+        }
+      } catch (socketErr) {
+        console.warn('updateTicket: failed to emit ticket:escalated (continuing):', (socketErr as Error).message);
       }
     }
 
@@ -668,6 +711,42 @@ export async function updateStatus(req: AuthRequest, res: Response): Promise<voi
     }
 
     const updated = await prisma.ticket.update({ where: { id }, data: { status } });
+
+    // Notify chatbot in real time when an agent starts working on the ticket
+    if (status === 'in_progress') {
+      try {
+        const agent = await prisma.user.findUnique({ where: { id: userId }, select: { first_name: true, last_name: true, email: true } });
+        let agentName: string | null = null;
+        if (agent) {
+          const parts = [agent.first_name, agent.last_name].filter(Boolean).join(' ').trim();
+          if (parts) agentName = parts;
+          else { try { agentName = decryptPII(agent.email || ''); } catch { agentName = agent.email || null; } }
+        }
+        getIO().to(`ticket:${id}`).emit('ticket:agent_started', {
+          ticket_id: id,
+          agent_name: agentName,
+        });
+
+        // Persist the agent-joined event as a system message
+        const tpId = (t as any).tenant_product_id;
+        if (tpId) {
+          const convType = (t as any).source === 'web_form' ? 'ticket' : 'bot';
+          const sysBody = `${agentName || 'An agent'} has joined the conversation.`;
+          await Conversation.updateOne(
+            { tenant_product_id: tpId, ticket_id: id, type: convType },
+            {
+              $setOnInsert: { tenant_product_id: tpId, tenant_id: tenantId, ticket_id: id, type: convType, created_at: new Date() },
+              $set: { updated_at: new Date() },
+              $push: { messages: { message_id: `sys-start-${Date.now()}`, author_type: 'system', author_name: 'System', body: sysBody, is_internal: false, created_at: new Date() } },
+            },
+            { upsert: true, strict: false },
+          ).catch((e: Error) => console.warn('updateStatus: failed to save system message:', e.message));
+        }
+      } catch (socketErr) {
+        console.warn('updateStatus: failed to emit ticket:agent_started (continuing):', (socketErr as Error).message);
+      }
+    }
+
     res.json(updated);
   } catch (e) {
     console.error('updateStatus error:', e);
@@ -716,7 +795,8 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
           const msgs = convo.messages
             .map((m: any) => ({
               id: m.message_id,
-              from: m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
+              from: m.author_type === 'system' ? 'system' : m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
+              author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
               text: m.body,
               created_at: m.created_at ? new Date(m.created_at) : new Date(),
             }))
@@ -741,7 +821,8 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
         const sorted = (emailConvo.messages as any[])
           .map((m: any) => ({
             id: m.message_id,
-            from: m.author_type === 'agent' ? 'agent' : 'user',
+            from: m.author_type === 'system' ? 'system' : m.author_type === 'agent' ? 'agent' : 'user',
+            author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
             text: m.body,
             created_at: m.created_at ? new Date(m.created_at) : new Date(),
           }))

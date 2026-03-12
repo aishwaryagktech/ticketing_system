@@ -115,7 +115,7 @@ export default function SignupPage() {
         }}
       >
         {/* Brand header (matches landing page) */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none', color: 'inherit' }}>
           <div
             style={{
               width: 32,
@@ -141,7 +141,7 @@ export default function SignupPage() {
             <span style={{ fontSize: 15, fontWeight: 700 }}>GKT AI Ticketing</span>
             <span style={{ fontSize: 11, color: textSecondary }}>Modern AI workspace for education teams</span>
           </div>
-        </div>
+        </Link>
 
         <div
           style={{

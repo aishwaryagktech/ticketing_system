@@ -55,15 +55,19 @@ async function ragAnswerWithLlm(args: {
     `Knowledge base context:\n${contextBlock}\n\n` +
     `Write the best possible support answer now.`;
 
-  const resp = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
-    ],
-    temperature: 0.2,
-  });
+  const resp = await Promise.race([
+    client.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0.2,
+    }),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 15000)),
+  ]);
 
+  if (!resp || !('choices' in resp)) throw new Error('LLM call timed out');
   return resp.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
 }
 
@@ -278,7 +282,6 @@ async function createHandoffTicket(args: {
 const DEFAULT_WELCOME = 'Hi! How can I help you today?';
 
 // GET /api/bot/welcome-message?tenant_id=...&tenant_product_id=...
-// Fetches kb_sources content for tenant_product_id, passes to LLM to generate a friendly starting message (no auth).
 export async function welcomeMessage(req: Request, res: Response): Promise<void> {
   const tenant_id = typeof req.query.tenant_id === 'string' ? req.query.tenant_id.trim() : '';
   const tenant_product_id = typeof req.query.tenant_product_id === 'string' ? req.query.tenant_product_id.trim() : '';
@@ -289,12 +292,20 @@ export async function welcomeMessage(req: Request, res: Response): Promise<void>
   try {
     const tp = await prisma.tenantProduct.findFirst({
       where: { id: tenant_product_id, ...(tenant_id ? { tenant_id } : {}) },
-      select: { id: true, name: true },
+      select: { id: true, name: true, l0_provider: true, l0_model: true },
     });
     if (!tp) {
       res.json({ message: DEFAULT_WELCOME });
       return;
     }
+
+    const client = getOpenAI();
+    if (!client) {
+      res.json({ message: DEFAULT_WELCOME });
+      return;
+    }
+
+    // Try to load KB sources to enrich the welcome message
     const sources = await prisma.kbSource.findMany({
       where: { tenant_product_id, status: 'extracted' },
       select: { title: true, content_text: true },
@@ -312,39 +323,41 @@ export async function welcomeMessage(req: Request, res: Response): Promise<void>
       .join('\n\n---\n\n');
     if (combined.length > maxChars) combined = combined.slice(0, maxChars) + '\n\n[... truncated]';
 
-    if (!combined.trim()) {
-      res.json({ message: DEFAULT_WELCOME });
-      return;
-    }
-
-    const client = getOpenAI();
-    if (!client) {
-      res.json({ message: DEFAULT_WELCOME });
-      return;
-    }
+    const model = tp.l0_model || 'gpt-4o-mini';
 
     const system =
       'You are writing the very first message for a support chat widget. Your reply will be shown as the bot\'s opening message. ' +
       'Write in a friendly, concise way. Do not use markdown or code blocks.';
 
-    const user =
-      `Product/context: ${tp.name || 'Support'}\n\n` +
-      `Using the knowledge base content below, write a short welcome message (2–4 sentences) that:\n` +
-      `1. Says hi and asks how you can help today.\n` +
-      `2. Says something like "Do you have any of these issues?" and then list 4–6 specific topics or problems that the knowledge base can help with, based on the content.\n` +
-      `Use simple bullet points or short lines for the list. Keep the whole message under 250 words.\n\n` +
-      `Knowledge base content:\n\n${combined}`;
+    const userPrompt = combined.trim()
+      ? `Product/context: ${tp.name || 'Support'}\n\n` +
+        `Using the knowledge base content below, write a short welcome message (2–4 sentences) that:\n` +
+        `1. Says hi and asks how you can help today.\n` +
+        `2. Mentions 4–6 specific topics or problems that the knowledge base can help with (as a short bullet list).\n` +
+        `Keep the whole message under 250 words.\n\n` +
+        `Knowledge base content:\n\n${combined}`
+      : `Product/context: ${tp.name || 'Support'}\n\n` +
+        `Write a short, friendly welcome message (2–3 sentences) for a support chat widget. ` +
+        `Say hi, mention you are a support bot for "${tp.name || 'this product'}", and ask how you can help today.`;
 
-    const resp = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.4,
-      max_tokens: 400,
-    });
-    const message = resp.choices?.[0]?.message?.content?.trim() || DEFAULT_WELCOME;
+    const timeoutMs = 12000;
+    const resp = await Promise.race([
+      client.chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.4,
+        max_tokens: 400,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+    ]);
+
+    const message =
+      resp && 'choices' in resp
+        ? resp.choices?.[0]?.message?.content?.trim() || DEFAULT_WELCOME
+        : DEFAULT_WELCOME;
     res.json({ message });
   } catch (e) {
     console.error('welcomeMessage error:', e);

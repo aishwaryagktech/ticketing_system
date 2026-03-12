@@ -5,6 +5,9 @@ import { rbac } from '../middleware/rbac';
 
 const router = Router();
 
+// Public — no auth required (used by the landing page pricing page)
+router.get('/plans/public', billingController.listPlans);
+
 // List active plans — allowed for any authenticated user (e.g. onboarding)
 router.get('/plans', auth, billingController.listPlans);
 

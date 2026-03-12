@@ -99,6 +99,16 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
       console.warn('createComment: sentiment update failed (continuing):', (aiErr as Error).message);
     }
 
+    // Resolve agent display name once — used in both the Mongo mirror and socket emit.
+    let resolvedAuthorName: string | null = null;
+    try {
+      const agentUser = await prisma.user.findUnique({ where: { id: userId }, select: { first_name: true, last_name: true, email: true } });
+      if (agentUser) {
+        const parts = [agentUser.first_name, agentUser.last_name].filter(Boolean).join(' ').trim();
+        resolvedAuthorName = parts || agentUser.email || null;
+      }
+    } catch { /* non-fatal */ }
+
     // Mirror agent reply into Mongo Conversation.
     // web_form tickets: write to type:'ticket' (email thread, Gmail-synced).
     // All other sources (bot_handoff, widget, etc.): write to type:'bot'.
@@ -108,7 +118,7 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
           message_id: comment.id,
           author_type: 'agent',
           author_id: userId,
-          author_name: 'Agent',
+          author_name: resolvedAuthorName || 'Agent',
           body: body.trim(),
           is_internal: is_internal === true,
           created_at: comment.created_at,
@@ -185,6 +195,7 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
       io.to(`ticket:${ticket.id}`).emit('ticket:message', {
         ticket_id: ticket.id,
         from: is_internal === true ? 'agent_internal' : 'agent',
+        author_name: resolvedAuthorName,
         text: body.trim(),
         created_at: new Date().toISOString(),
       });

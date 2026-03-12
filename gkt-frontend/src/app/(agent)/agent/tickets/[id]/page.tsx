@@ -7,6 +7,8 @@ import { ticketApi } from '@/lib/api/ticket.api';
 import { onboardingApi } from '@/lib/api/onboarding.api';
 import { gmailApi } from '@/lib/api/gmail.api';
 import { useAuthStore } from '@/store/auth.store';
+import { connectSocket } from '@/lib/socket';
+import type { Socket } from 'socket.io-client';
 
 type Ticket = any;
 type ConversationMessage = {
@@ -20,7 +22,7 @@ export default function AgentTicketDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user, hydrate } = useAuthStore();
+  const { user, hydrate, token } = useAuthStore();
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -31,7 +33,9 @@ export default function AgentTicketDetailPage() {
   const [isInternal, setIsInternal] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTab] = useState<'conversation' | 'details' | 'sla' | 'escalations'>('conversation');
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const socketJoinedRef = useRef(false);
+  const loadRef = useRef<() => Promise<void>>(async () => {});
   const hasMarkedOpenRef = useRef(false);
   const [nextEscalationAgents, setNextEscalationAgents] = useState<Array<{ id: string; first_name?: string | null; last_name?: string | null; email?: string | null; role?: string | null }>>([]);
   const [nextEscalationLoading, setNextEscalationLoading] = useState(false);
@@ -136,6 +140,9 @@ export default function AgentTicketDetailPage() {
     }
   };
 
+  // Keep loadRef in sync so socket callbacks always call the latest version
+  loadRef.current = load;
+
   const refreshEmailThread = async () => {
     setLoading(true);
     setError('');
@@ -179,43 +186,48 @@ export default function AgentTicketDetailPage() {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
-  // Poll conversation every 5s while on "conversation" tab
+  // WebSocket: join ticket room when in_progress/pending_user, leave on close/resolve/escalate
   useEffect(() => {
-    const isBotHandoff = ticket && String(ticket.source || '').toLowerCase() === 'bot_handoff';
-    if (tab !== 'conversation' || !isBotHandoff) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
+    const activeStatuses = ['in_progress', 'pending_user'];
+    // Also stop when this agent has escalated the ticket to someone else
+    const isActive = activeStatuses.includes(statusNorm) && !escalatedTo;
+
+    if (!isActive || isReadOnly || !token || !id) {
+      // Leave room if we were previously joined
+      if (socketJoinedRef.current && socketRef.current) {
+        socketRef.current.emit('leave:ticket', id);
+        socketRef.current.off('ticket:message');
+        socketJoinedRef.current = false;
       }
       return;
     }
-    pollRef.current = setInterval(async () => {
-      try {
-        const convRes = await ticketApi.getConversation(id);
-        const conv = (convRes.data?.messages as any[]) || [];
-        setMessages(
-          conv.map((m: any) => ({
-            id: String(m.id),
-            from: (m.from === 'bot' || m.from === 'user' || m.from === 'agent' ? m.from : 'agent') as
-              | 'user'
-              | 'bot'
-              | 'agent',
-            text: String(m.text || ''),
-            created_at: m.created_at,
-          })),
-        );
-      } catch (e: any) {
-        // ignore polling errors, main load() handles user-visible errors
-        console.warn('pollConversation failed:', e?.message || e);
+
+    // Already joined this ticket room — nothing to do
+    if (socketJoinedRef.current) return;
+
+    const sock = connectSocket(token);
+    socketRef.current = sock;
+    sock.emit('join:ticket', id);
+    socketJoinedRef.current = true;
+
+    sock.on('ticket:message', (data: any) => {
+      const from = String(data.from || '');
+      // Reload conversation for external messages (user/bot).
+      // Agent's own replies are already refreshed by addComment → load().
+      if (from === 'user' || from === 'bot') {
+        loadRef.current();
       }
-    }, 10000);
+    });
+
     return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
+      if (socketRef.current && socketJoinedRef.current) {
+        socketRef.current.emit('leave:ticket', id);
+        socketRef.current.off('ticket:message');
+        socketJoinedRef.current = false;
       }
     };
-  }, [id, tab, ticket?.source]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, statusNorm, isReadOnly, token, escalatedTo]);
 
   const addComment = async () => {
     if (isReadOnly) return;

@@ -92,7 +92,8 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
         if (convo && Array.isArray(convo.messages) && convo.messages.length > 0) {
           fromMongo = convo.messages.map((m: any) => ({
             id: m.message_id,
-            from: m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
+            from: m.author_type === 'system' ? 'system' : m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
+            author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
             text: m.body,
             created_at: m.created_at ? new Date(m.created_at) : new Date(),
           }));

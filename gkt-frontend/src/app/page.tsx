@@ -86,7 +86,7 @@ export default function appPage() {
           <Link href="/support" style={{ textDecoration: 'none', color: textSecondary }}>
             Support
           </Link>
-          <Link href="/(onboarding)/pricing" style={{ textDecoration: 'none', color: textSecondary }}>
+          <Link href="/pricing" style={{ textDecoration: 'none', color: textSecondary }}>
             Pricing
           </Link>
         </nav>

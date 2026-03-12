@@ -10,8 +10,9 @@ import type { Socket } from 'socket.io-client';
 
 interface Message {
   id: string;
-  from: 'user' | 'bot';
+  from: 'user' | 'bot' | 'system';
   text: string;
+  author_name?: string;   // agent display name for differentiation
   created_at?: string | Date;
 }
 
@@ -86,23 +87,13 @@ export default function PortalChatPage() {
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
-  // Live ticket conversation via Socket.io only when ticket status is in_progress / pending_user.
+  // Live ticket conversation via Socket.io — join as soon as a ticket is active.
+  // No status gate: we want to receive agent replies the moment they are sent,
+  // regardless of whether the local ticketList has the latest status.
   useEffect(() => {
     if (view !== 'tickets' || !activeTicketId) {
       if (ticketSocketRef.current) {
         ticketSocketRef.current.off('ticket:message');
-        disconnectSocket();
-        ticketSocketRef.current = null;
-      }
-      return;
-    }
-
-    const t = ticketList.find((x) => x.id === activeTicketId);
-    const status = (t?.status || '').toLowerCase();
-    if (!t || (status !== 'in_progress' && status !== 'pending_user')) {
-      if (ticketSocketRef.current) {
-        ticketSocketRef.current.off('ticket:message');
-        disconnectSocket();
         ticketSocketRef.current = null;
       }
       return;
@@ -115,31 +106,55 @@ export default function PortalChatPage() {
     }
     socket.emit('join:ticket', activeTicketId);
 
-    const handler = (payload: any) => {
+    const messageHandler = (payload: any) => {
       if (!payload || payload.ticket_id !== activeTicketId) return;
       const fromRaw = String(payload.from || 'agent');
-      const from: 'user' | 'bot' = fromRaw === 'user' ? 'user' : 'bot';
+      // Skip user's own messages — handleSend already appends them via getTicketMessages REST call
+      if (fromRaw === 'user') return;
       const text = String(payload.text || '');
       if (!text) return;
-      const id = String(payload.id || `${Date.now()}-rt`);
-      const created_at = payload.created_at;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id,
-          from,
-          text,
-          created_at,
-        },
-      ]);
+      const msgId = String(payload.id || `rt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+      const author_name = payload.author_name ? String(payload.author_name) : undefined;
+      setMessages((prev) => {
+        // Deduplicate: skip if same text+author already exists in last 3 messages
+        const recent = prev.slice(-3);
+        if (recent.some((m) => m.text === text && m.from === 'bot')) return prev;
+        return [...prev, { id: msgId, from: 'bot' as const, text, author_name, created_at: payload.created_at }];
+      });
     };
 
-    socket.on('ticket:message', handler);
+    const escalatedHandler = (payload: any) => {
+      if (!payload || payload.ticket_id !== activeTicketId) return;
+      const byName = payload.escalated_by_name ? `${payload.escalated_by_name}` : 'Your agent';
+      const toName = payload.assigned_to_name ? ` to ${payload.assigned_to_name}` : '';
+      setMessages((prev) => [...prev, {
+        id: `sys-esc-${Date.now()}`,
+        from: 'system' as const,
+        text: `${byName} has transferred your chat${toName}. Please wait while the next agent connects.`,
+      }]);
+    };
+
+    const agentStartedHandler = (payload: any) => {
+      if (!payload || payload.ticket_id !== activeTicketId) return;
+      const name = payload.agent_name ? payload.agent_name : 'An agent';
+      setMessages((prev) => [...prev, {
+        id: `sys-start-${Date.now()}`,
+        from: 'system' as const,
+        text: `${name} has joined the conversation.`,
+      }]);
+    };
+
+    socket.on('ticket:message', messageHandler);
+    socket.on('ticket:escalated', escalatedHandler);
+    socket.on('ticket:agent_started', agentStartedHandler);
 
     return () => {
-      socket.off('ticket:message', handler);
+      socket.off('ticket:message', messageHandler);
+      socket.off('ticket:escalated', escalatedHandler);
+      socket.off('ticket:agent_started', agentStartedHandler);
+      socket.emit('leave:ticket', activeTicketId);
     };
-  }, [view, activeTicketId, ticketList]);
+  }, [view, activeTicketId]);
 
   useEffect(() => {
     return () => {
@@ -168,7 +183,8 @@ export default function PortalChatPage() {
         setMessages(
           msgs.map((m: any) => ({
             id: String(m.id),
-            from: m.from === 'agent' ? 'bot' : m.from,
+            from: (m.from === 'agent' ? 'bot' : m.from) as Message['from'],
+            author_name: m.author_name || undefined,
             text: String(m.text || ''),
             created_at: m.created_at,
           })),
@@ -285,7 +301,8 @@ export default function PortalChatPage() {
       setMessages(
         msgs.map((m: any) => ({
           id: String(m.id),
-          from: m.from === 'agent' ? 'bot' : m.from,
+          from: (m.from === 'agent' ? 'bot' : m.from) as Message['from'],
+          author_name: m.author_name || undefined,
           text: String(m.text || ''),
           created_at: m.created_at,
         })),
@@ -614,30 +631,37 @@ export default function PortalChatPage() {
                   </button>
                 </div>
               )}
-              {messages.map((m) => (
-                <div
-                  key={m.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
-                  }}
-                >
-                  <div
-                    style={{
-                      maxWidth: '80%',
-                      padding: '8px 10px',
-                      borderRadius: 14,
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      whiteSpace: 'pre-wrap',
-                      background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
-                      color: m.from === 'user' ? '#111827' : '#E5E7EB',
-                    }}
-                  >
-                    {m.text}
+              {messages.map((m) => {
+                if (m.from === 'system') {
+                  return (
+                    <div key={m.id} style={{ display: 'flex', justifyContent: 'center', margin: '6px 0' }}>
+                      <div style={{
+                        fontSize: 10, color: '#94A3B8', background: 'rgba(30,41,59,0.7)',
+                        border: '1px solid rgba(148,163,184,0.2)', borderRadius: 99,
+                        padding: '4px 12px', maxWidth: '90%', textAlign: 'center',
+                      }}>
+                        {m.text}
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={m.id} style={{ display: 'flex', justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: m.from === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+                      {m.from === 'bot' && m.author_name && (
+                        <span style={{ fontSize: 10, color: '#94A3B8', marginBottom: 2, paddingLeft: 4 }}>{m.author_name}</span>
+                      )}
+                      <div style={{
+                        padding: '8px 10px', borderRadius: 14, fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                        background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
+                        color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                      }}>
+                        {m.text}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {error && (
                 <div style={{ fontSize: 11, color: '#FCA5A5', marginTop: 4 }}>
                   {error}
@@ -672,30 +696,37 @@ export default function PortalChatPage() {
                 Loading…
               </div>
             ) : (
-              messages.map((m) => (
-                <div
-                  key={m.id}
-                  style={{
-                    display: 'flex',
-                    justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start',
-                  }}
-                >
-                  <div
-                    style={{
-                      maxWidth: '80%',
-                      padding: '8px 10px',
-                      borderRadius: 14,
-                      fontSize: 12,
-                      lineHeight: 1.5,
-                      whiteSpace: 'pre-wrap',
-                      background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
-                      color: m.from === 'user' ? '#111827' : '#E5E7EB',
-                    }}
-                  >
-                    {m.text}
+              messages.map((m) => {
+                if (m.from === 'system') {
+                  return (
+                    <div key={m.id} style={{ display: 'flex', justifyContent: 'center', margin: '6px 0' }}>
+                      <div style={{
+                        fontSize: 10, color: '#94A3B8', background: 'rgba(30,41,59,0.7)',
+                        border: '1px solid rgba(148,163,184,0.2)', borderRadius: 99,
+                        padding: '4px 12px', maxWidth: '90%', textAlign: 'center',
+                      }}>
+                        {m.text}
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={m.id} style={{ display: 'flex', justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: m.from === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+                      {m.from === 'bot' && m.author_name && (
+                        <span style={{ fontSize: 10, color: '#94A3B8', marginBottom: 2, paddingLeft: 4 }}>{m.author_name}</span>
+                      )}
+                      <div style={{
+                        padding: '8px 10px', borderRadius: 14, fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                        background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
+                        color: m.from === 'user' ? '#111827' : '#E5E7EB',
+                      }}>
+                        {m.text}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
             {error && (
               <div style={{ fontSize: 11, color: '#FCA5A5', marginTop: 4 }}>
