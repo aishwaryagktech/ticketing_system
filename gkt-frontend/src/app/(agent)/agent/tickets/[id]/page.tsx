@@ -893,12 +893,18 @@ export default function AgentTicketDetailPage() {
                     .filter((m) => m.from !== 'system' && !m.is_internal)
                     .map((m, idx) => {
                       const isAgent = m.from === 'agent';
+                      const isBot = m.from === 'bot';
+                      const isCustomer = m.from === 'user';
                       const bubbleBg = isAgent
                         ? (isDark ? 'rgba(250,204,21,0.15)' : '#FEF9C3')
-                        : (isDark ? 'rgba(30,41,59,0.5)' : '#F1F5F9');
+                        : isBot
+                          ? (isDark ? 'rgba(99,102,241,0.12)' : 'rgba(99,102,241,0.08)')
+                          : (isDark ? 'rgba(30,41,59,0.5)' : '#F1F5F9');
                       const bubbleBorder = isAgent
                         ? (isDark ? 'rgba(250,204,21,0.3)' : '#FEF08A')
-                        : (isDark ? 'rgba(148,163,184,0.2)' : '#E2E8F0');
+                        : isBot
+                          ? (isDark ? 'rgba(99,102,241,0.25)' : 'rgba(99,102,241,0.25)')
+                          : (isDark ? 'rgba(148,163,184,0.2)' : '#E2E8F0');
 
                       return (
                         <div
@@ -920,7 +926,9 @@ export default function AgentTicketDetailPage() {
                             gap: 6,
                             flexDirection: isAgent ? 'row-reverse' : 'row'
                           }}>
-                            <span>{m.author_name || (isAgent ? 'Support' : 'Customer')}</span>
+                            <span>
+                              {m.author_name || (isAgent ? 'Support' : isBot ? 'Bot' : isCustomer ? 'Customer' : 'Customer')}
+                            </span>
                             <span style={{ opacity: 0.6 }}>{m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
                           </div>
                           <div style={{
@@ -1124,6 +1132,24 @@ export default function AgentTicketDetailPage() {
                   </div>
                 ))}
               </div>
+            </div>
+
+            {/* CHAT SUMMARY Card */}
+            <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Chat Summary
+              </div>
+              {conversationSummaryLoading ? (
+                <div style={{ fontSize: 12, color: textSecondary }}>Generating summary…</div>
+              ) : conversationSummary ? (
+                <div style={{ fontSize: 13, color: textPrimary, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                  {conversationSummary}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: textSecondary, fontStyle: 'italic' }}>
+                  No summary available yet.
+                </div>
+              )}
             </div>
 
             {/* INTERNAL NOTE Card */}

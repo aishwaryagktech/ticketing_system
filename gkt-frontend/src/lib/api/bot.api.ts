@@ -30,4 +30,22 @@ export const botApi = {
     }),
   handoff: (sessionId: string) =>
     apiClient.post('/api/bot/handoff', { session_id: sessionId }),
+  getConversation: async (tenant_id: string, tenant_product_id: string, session_id: string) => {
+    const params = new URLSearchParams({ tenant_id, tenant_product_id, session_id });
+    const res = await fetch(`${BASE_URL}/api/bot/conversation?${params}`, {
+      headers: { Accept: 'application/json' },
+    });
+    const data = await res.json();
+    return { data } as {
+      data: {
+        messages: Array<{
+          id: string;
+          from: string;
+          text: string;
+          author_name?: string;
+          created_at: string | Date;
+        }>;
+      };
+    };
+  },
 };

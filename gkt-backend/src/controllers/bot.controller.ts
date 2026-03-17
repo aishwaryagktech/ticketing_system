@@ -646,6 +646,215 @@ export async function chat(req: Request, res: Response): Promise<void> {
   res.json({ reply, session_id: sessionId });
 }
 
+// POST /api/bot/voice-token
+// Creates an OpenAI Realtime ephemeral token with KB context as system instructions.
+export async function getVoiceToken(req: Request, res: Response): Promise<void> {
+  const { tenant_id, tenant_product_id, user_email } = (req.body as any) || {};
+
+  if (!tenant_id) {
+    res.status(400).json({ error: 'tenant_id required' });
+    return;
+  }
+  if (!env.OPENAI_API_KEY) {
+    res.status(503).json({ error: 'OpenAI not configured' });
+    return;
+  }
+
+  let kbContext = '';
+  let productName = 'Support';
+
+  try {
+    if (tenant_product_id) {
+      const tp = await prisma.tenantProduct.findUnique({
+        where: { id: tenant_product_id },
+        select: { name: true },
+      });
+      productName = tp?.name || 'Support';
+
+      const q = await embedQuery('support help account access issues troubleshoot');
+      const hits = await searchKb(q, { limit: 6, tenant_product_id });
+      kbContext = hits
+        .filter((h) => h.score >= 0.1)
+        .map((h) => String(h.payload?.text || ''))
+        .filter(Boolean)
+        .join('\n\n---\n\n')
+        .slice(0, 4000);
+    }
+  } catch (e) {
+    console.warn('getVoiceToken: KB fetch failed', e);
+  }
+
+  let displayName = '';
+  if (user_email) {
+    const local = String(user_email).split('@')[0] || '';
+    const first = local.split('.')[0] || local.split('_')[0] || local;
+    displayName = first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+  }
+  const welcomeText = displayName
+    ? `Hi ${displayName}! How can I help you today?`
+    : 'Hi! How can I help you today?';
+
+  const instructions =
+    `You are a voice support agent for ${productName}. ` +
+    `Speak naturally and concisely — this is a voice conversation, keep answers brief. ` +
+    `Answer ONLY from the knowledge base below. ` +
+    `Do not use markdown formatting, bullet points or numbered lists in speech — speak in natural sentences.\n\n` +
+    `TICKET ESCALATION RULES (important):\n` +
+    `- If the user explicitly asks to raise a ticket, create a ticket, or talk to a human agent, immediately call raise_support_ticket.\n` +
+    `- If you have tried to help but cannot find a satisfactory answer in the knowledge base after 1-2 exchanges, say "I'm not able to fully resolve this from my knowledge base. Would you like me to raise a support ticket for you?" — if the user agrees, call raise_support_ticket.\n` +
+    `- If the user expresses frustration or says the answer didn't help, offer to raise a ticket and call raise_support_ticket if they agree.\n` +
+    `- When calling raise_support_ticket, provide a clear, concise summary of the user's issue as the issue_summary.\n\n` +
+    (kbContext
+      ? `Knowledge base:\n${kbContext}`
+      : 'Answer questions about the product and direct users to contact support if needed.');
+
+  const raiseTicketTool = {
+    type: 'function',
+    name: 'raise_support_ticket',
+    description:
+      'Create a support ticket when the user asks to talk to a human, raise a ticket, or when you cannot resolve their issue from the knowledge base. Call this as soon as the user agrees or requests escalation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        issue_summary: {
+          type: 'string',
+          description: "A short, clear summary of the user's issue (used as the ticket subject)",
+        },
+      },
+      required: ['issue_summary'],
+    },
+  };
+
+  try {
+    const sessionRes = await fetch('https://api.openai.com/v1/realtime/sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-realtime-preview-2024-12-17',
+        voice: 'alloy',
+        instructions,
+        turn_detection: { type: 'server_vad', silence_duration_ms: 700 },
+        input_audio_transcription: { model: 'whisper-1' },
+        tools: [raiseTicketTool],
+        tool_choice: 'auto',
+      }),
+    });
+
+    if (!sessionRes.ok) {
+      const errData = await sessionRes.json().catch(() => ({}));
+      res
+        .status(sessionRes.status)
+        .json({ error: (errData as any)?.error?.message || 'Failed to create voice session' });
+      return;
+    }
+
+    const sessionData = (await sessionRes.json()) as { client_secret: unknown };
+    res.json({ client_secret: sessionData.client_secret, welcome_text: welcomeText });
+  } catch (e: any) {
+    console.error('getVoiceToken error:', e);
+    res.status(500).json({ error: 'Failed to create voice session' });
+  }
+}
+
+// POST /api/bot/voice-handoff
+// Called by the frontend when the Realtime LLM invokes raise_support_ticket tool.
+export async function voiceHandoff(req: Request, res: Response): Promise<void> {
+  const body = (req.body as any) || {};
+  const tenant_id = typeof body.tenant_id === 'string' ? body.tenant_id.trim() : '';
+  const tenant_product_id = typeof body.tenant_product_id === 'string' ? body.tenant_product_id.trim() : null;
+  const user_email = typeof body.user_email === 'string' ? body.user_email.trim() : null;
+  const user_id = typeof body.user_id === 'string' ? body.user_id.trim() : null;
+  const issue_summary = typeof body.issue_summary === 'string' ? body.issue_summary.trim() : 'Support request from voice agent';
+  const conversation_text = typeof body.conversation_text === 'string' ? body.conversation_text.trim() : '';
+
+  if (!tenant_id) {
+    res.status(400).json({ error: 'tenant_id required' });
+    return;
+  }
+
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenant_id }, select: { id: true, product_id: true } });
+    if (!tenant) { res.status(404).json({ error: 'Tenant not found' }); return; }
+
+    // Resolve user
+    let resolvedUserId: string | null = user_id;
+    if (!resolvedUserId && user_email) {
+      const u = await prisma.user.findFirst({ where: { email: user_email }, select: { id: true } });
+      resolvedUserId = u?.id ?? null;
+    }
+
+    const ticketNumber =
+      'TKT-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+
+    const subject = issue_summary.slice(0, 200);
+    const description = conversation_text
+      ? `Voice conversation transcript:\n\n${conversation_text}\n\n---\nIssue summary: ${subject}`
+      : `Issue raised via voice agent: ${subject}`;
+
+    // AI enrichment (best-effort)
+    let category: string | null = null;
+    let subCategory: string | null = null;
+    let aiPriority: 'p1' | 'p2' | 'p3' | 'p4' = 'p3';
+    let department: string | null = null;
+    let aiConfidence: number | null = null;
+    let sentiment: string | null = null;
+    let sentimentTrend: string | null = null;
+
+    try {
+      const adapter = await getActiveAdapter(tenant.product_id);
+      const [cls, snt] = await Promise.all([adapter.classify(subject), adapter.detectSentiment(subject)]);
+      category = cls.category || null;
+      subCategory = cls.sub_category || null;
+      const rawPriority = (cls.priority || '').toLowerCase();
+      if (rawPriority === 'p1' || rawPriority === 'p2' || rawPriority === 'p3' || rawPriority === 'p4') aiPriority = rawPriority;
+      aiConfidence = typeof cls.confidence === 'number' ? cls.confidence : null;
+      const catLower = (category || '').toLowerCase();
+      if (catLower === 'technical') department = 'Engineering';
+      else if (catLower === 'billing') department = 'Finance';
+      sentiment = (snt.sentiment || '').toLowerCase() || null;
+      sentimentTrend = snt.trend || null;
+    } catch { /* enrichment optional */ }
+
+    let slaDeadline: Date | null = null;
+    try {
+      const resolutionMins = await getResolutionTimeMins(tenant.product_id, tenant_product_id || null, aiPriority);
+      if (resolutionMins != null && resolutionMins > 0) slaDeadline = computeSlaDeadline(new Date(), resolutionMins);
+    } catch { /* optional */ }
+
+    const ticket = await prisma.ticket.create({
+      data: {
+        ticket_number: ticketNumber,
+        subject,
+        description: description.slice(0, 20000),
+        status: 'new_ticket',
+        priority: aiPriority,
+        source: 'bot_handoff',
+        user_type: 'tenant_user',
+        escalation_level: 1,
+        product_id: tenant.product_id,
+        tenant_id,
+        tenant_product_id: tenant_product_id || null,
+        created_by: user_email ?? resolvedUserId ?? 'widget',
+        category,
+        sub_category: subCategory,
+        department,
+        ai_confidence: aiConfidence,
+        sentiment: sentiment as any,
+        sentiment_trend: sentimentTrend,
+        sla_deadline: slaDeadline,
+      },
+    });
+
+    res.json({ ticket_id: ticket.id, ticket_number: ticket.ticket_number });
+  } catch (e: any) {
+    console.error('voiceHandoff error:', e);
+    res.status(500).json({ error: 'Failed to create voice ticket' });
+  }
+}
+
 // POST /api/bot/handoff
 export async function handoff(req: Request, res: Response): Promise<void> {
   const body = (req.body as any) || {};
@@ -674,5 +883,42 @@ export async function handoff(req: Request, res: Response): Promise<void> {
   } catch (e) {
     console.error('handoff error:', e);
     res.status(500).json({ error: 'Failed to handoff' });
+  }
+}
+
+// GET /api/bot/conversation?tenant_id=&tenant_product_id=&session_id=
+export async function getBotConversation(req: Request, res: Response): Promise<void> {
+  const tenant_id = typeof req.query.tenant_id === 'string' ? req.query.tenant_id.trim() : '';
+  const tenant_product_id = typeof req.query.tenant_product_id === 'string' ? req.query.tenant_product_id.trim() : '';
+  const session_id = typeof req.query.session_id === 'string' ? req.query.session_id.trim() : '';
+
+  if (!tenant_id || !session_id) {
+    res.status(400).json({ error: 'tenant_id and session_id required' });
+    return;
+  }
+
+  try {
+    const filter: Record<string, string> = { type: 'bot', session_id };
+    if (tenant_product_id) filter.tenant_product_id = tenant_product_id;
+
+    const convo = await Conversation.findOne(filter, { messages: 1 }).lean();
+
+    if (!convo || !Array.isArray((convo as any).messages) || (convo as any).messages.length === 0) {
+      res.json({ messages: [] });
+      return;
+    }
+
+    const messages = ((convo as any).messages as any[]).map((m) => ({
+      id: String(m._id ?? m.id ?? `msg-${Math.random()}`),
+      from: String(m.from ?? 'bot'),
+      text: String(m.text ?? ''),
+      author_name: m.author_name ?? undefined,
+      created_at: m.created_at ?? new Date(),
+    }));
+
+    res.json({ messages });
+  } catch (e) {
+    console.error('getBotConversation error:', e);
+    res.status(500).json({ error: 'Failed to load conversation' });
   }
 }

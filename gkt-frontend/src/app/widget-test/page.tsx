@@ -31,6 +31,11 @@ export default function WidgetTestPage() {
     // Dynamically inject the widget script on the client to avoid hydration issues
     const existing = document.querySelector('script[data-gkt-widget-script="true"]');
     if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    // Remove sidebar container (new layout) and any leftover old elements
+    const existingSidebar = document.getElementById('gkt-sidebar');
+    if (existingSidebar && existingSidebar.parentNode) existingSidebar.parentNode.removeChild(existingSidebar);
+    const existingStyle = document.querySelector('style[data-gkt-sidebar-style]');
+    if (existingStyle && existingStyle.parentNode) existingStyle.parentNode.removeChild(existingStyle);
     const existingIframe = document.querySelector('iframe[data-gkt-widget="chat"]');
     if (existingIframe && existingIframe.parentNode) existingIframe.parentNode.removeChild(existingIframe);
     const existingLauncher = document.querySelector('button[data-gkt-widget-launcher="chat"]');
@@ -52,6 +57,8 @@ export default function WidgetTestPage() {
 
     return () => {
       script.remove();
+      const sidebar = document.getElementById('gkt-sidebar');
+      if (sidebar && sidebar.parentNode) sidebar.parentNode.removeChild(sidebar);
       const iframe = document.querySelector('iframe[data-gkt-widget="chat"]');
       if (iframe && iframe.parentNode) iframe.parentNode.removeChild(iframe);
       const launcher = document.querySelector('button[data-gkt-widget-launcher="chat"]');

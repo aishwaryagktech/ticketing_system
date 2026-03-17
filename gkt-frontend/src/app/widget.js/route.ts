@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 
-export const dynamic = 'force-static';
+export const dynamic = 'force-dynamic';
 
 export async function GET(_req: NextRequest) {
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
@@ -26,83 +26,69 @@ export async function GET(_req: NextRequest) {
       var logo = (branding && branding.logo_base64) || '';
       var name = (branding && branding.name) || 'Support';
 
-      // Launcher button
-      var launcher = document.createElement('button');
-      launcher.type = 'button';
-      launcher.setAttribute('data-gkt-widget-launcher', 'chat');
-      launcher.style.position = 'fixed';
-      launcher.style.bottom = '20px';
-      launcher.style.right = '20px';
-      launcher.style.width = '52px';
-      launcher.style.height = '52px';
-      launcher.style.borderRadius = '999px';
-      launcher.style.border = 'none';
-      launcher.style.padding = '0';
-      launcher.style.cursor = 'pointer';
-      launcher.style.background = primary;
-      launcher.style.boxShadow = '0 18px 40px rgba(15,23,42,0.65)';
-      launcher.style.zIndex = '2147483647';
-      launcher.style.display = 'flex';
-      launcher.style.alignItems = 'center';
-      launcher.style.justifyContent = 'center';
-
-      if (logo) {
-        var img = document.createElement('img');
-        img.src = logo;
-        img.alt = name + ' logo';
-        img.style.width = '60%';
-        img.style.height = '60%';
-        img.style.objectFit = 'contain';
-        img.style.borderRadius = '999px';
-        launcher.appendChild(img);
-      } else {
-        var span = document.createElement('span');
-        span.textContent = '💬';
-        span.style.fontSize = '22px';
-        launcher.appendChild(span);
-      }
-
-      // Chat iframe (initially hidden)
-      var iframe = document.createElement('iframe');
+      // Build iframe src
       var src = chatBase + '/portal/chat?tenant_id=' + encodeURIComponent(tenantId);
       if (tenantProductId) src += '&tenant_product_id=' + encodeURIComponent(tenantProductId);
       else if (productId) src += '&product_id=' + encodeURIComponent(productId);
       if (userId) src += '&user_id=' + encodeURIComponent(userId);
       if (userEmail) src += '&user_email=' + encodeURIComponent(userEmail);
       src += '&primary_color=' + encodeURIComponent(primary);
-      if (logo) {
-        src += '&logo=' + encodeURIComponent(logo);
-      }
+      if (logo) src += '&logo=' + encodeURIComponent(logo);
+
+      // Inject sidebar styles (data attr so widget-test can clean it up on re-renders)
+      var style = document.createElement('style');
+      style.setAttribute('data-gkt-sidebar-style', 'true');
+      style.textContent = [
+        '#gkt-sidebar{position:fixed;top:0;right:0;bottom:0;z-index:2147483647;display:flex;align-items:center;transition:transform 0.32s cubic-bezier(0.4,0,0.2,1);}',
+        '#gkt-sidebar-tab{width:24px;height:64px;background:#1c0938;border:1px solid rgba(139,92,246,0.45);border-right:none;border-radius:8px 0 0 8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#a78bfa;font-size:20px;padding:0;flex-shrink:0;box-shadow:-4px 0 20px rgba(139,92,246,0.2);transition:background 0.2s,color 0.2s,box-shadow 0.2s;}',
+        '#gkt-sidebar-tab:hover{background:#2d1a4e;color:#c4b5fd;box-shadow:-6px 0 24px rgba(139,92,246,0.35);}',
+        '#gkt-sidebar-iframe{width:320px;height:100vh;border:none;flex-shrink:0;display:block;box-shadow:-8px 0 40px rgba(0,0,0,0.7);}',
+      ].join('');
+      document.head.appendChild(style);
+
+      // Sidebar container
+      var container = document.createElement('div');
+      container.id = 'gkt-sidebar';
+
+      // Collapse / expand tab
+      var tab = document.createElement('button');
+      tab.id = 'gkt-sidebar-tab';
+      tab.type = 'button';
+      tab.innerHTML = '&#8249;'; // ‹  starts collapsed → ‹ means "open me"
+      tab.title = 'Open assistant';
+      tab.setAttribute('aria-label', 'Toggle sidebar');
+
+      // Iframe
+      var iframe = document.createElement('iframe');
+      iframe.id = 'gkt-sidebar-iframe';
       iframe.src = src;
-      iframe.style.position = 'fixed';
-      iframe.style.bottom = '84px';
-      iframe.style.right = '20px';
-      iframe.style.width = '380px';
-      iframe.style.height = '520px';
-      iframe.style.border = 'none';
-      iframe.style.borderRadius = '18px';
-      iframe.style.boxShadow = '0 20px 40px rgba(15,23,42,0.65)';
-      iframe.style.zIndex = '2147483647';
       iframe.setAttribute('data-gkt-widget', 'chat');
-      iframe.style.display = 'none';
+      iframe.setAttribute('allow', 'microphone');
 
-      function adjustSize() {
-        try {
-          var maxHeight = window.innerHeight ? (window.innerHeight - 140) : 520;
-          if (maxHeight < 320) maxHeight = 320;
-          var h = Math.min(520, maxHeight);
-          iframe.style.height = h + 'px';
-        } catch (e) {
-          // ignore
-        }
+      container.appendChild(tab);
+      container.appendChild(iframe);
+      document.body.appendChild(container);
+
+      // Start collapsed — only the arrow tab shows on the right edge
+      var expanded = false;
+      container.style.transform = 'translateX(320px)';
+
+      function collapse() {
+        expanded = false;
+        container.style.transform = 'translateX(320px)';
+        tab.innerHTML = '&#8249;'; // ‹
+        tab.title = 'Open assistant';
       }
-      adjustSize();
-      window.addEventListener('resize', adjustSize);
 
-      var open = false;
-      launcher.addEventListener('click', function () {
-        open = !open;
-        iframe.style.display = open ? 'block' : 'none';
+      function expand() {
+        expanded = true;
+        container.style.transform = 'translateX(0)';
+        tab.innerHTML = '&#8250;'; // ›
+        tab.title = 'Collapse sidebar';
+      }
+
+      tab.addEventListener('click', function () {
+        if (expanded) collapse(); else expand();
       });
 
       // Allow the iframe to request close/reset via postMessage
@@ -111,23 +97,13 @@ export async function GET(_req: NextRequest) {
           if (!event || !event.data) return;
           var data = event.data;
           if (typeof data !== 'object') return;
-          if (data.type === 'gkt-widget-close') {
-            open = false;
-            iframe.style.display = 'none';
-          }
+          if (data.type === 'gkt-widget-close') collapse();
           if (data.type === 'gkt-widget-new-session') {
-            // Reload iframe src without cached session_id so chat starts fresh
-            iframe.src = iframe.src.split('#')[0];
-            open = true;
-            iframe.style.display = 'block';
+            iframe.src = src; // Reset to original src
+            expand();
           }
-        } catch (e) {
-          // ignore
-        }
+        } catch (e) { /* ignore */ }
       });
-
-      document.body.appendChild(iframe);
-      document.body.appendChild(launcher);
     }
 
     // Fetch branding from backend
@@ -151,7 +127,7 @@ export async function GET(_req: NextRequest) {
     status: 200,
     headers: {
       'Content-Type': 'application/javascript; charset=utf-8',
-      'Cache-Control': 'public, max-age=60',
+      'Cache-Control': 'no-store',
     },
   });
 }
