@@ -35,30 +35,28 @@ export async function GET(_req: NextRequest) {
       src += '&primary_color=' + encodeURIComponent(primary);
       if (logo) src += '&logo=' + encodeURIComponent(logo);
 
-      // Inject sidebar styles (data attr so widget-test can clean it up on re-renders)
+      // Inject styles (data attr so widget-test can clean up on re-renders)
       var style = document.createElement('style');
       style.setAttribute('data-gkt-sidebar-style', 'true');
       style.textContent = [
-        '#gkt-sidebar{position:fixed;top:0;right:0;bottom:0;z-index:2147483647;display:flex;align-items:center;transition:transform 0.32s cubic-bezier(0.4,0,0.2,1);}',
-        '#gkt-sidebar-tab{width:24px;height:64px;background:#1c0938;border:1px solid rgba(139,92,246,0.45);border-right:none;border-radius:8px 0 0 8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#a78bfa;font-size:20px;padding:0;flex-shrink:0;box-shadow:-4px 0 20px rgba(139,92,246,0.2);transition:background 0.2s,color 0.2s,box-shadow 0.2s;}',
-        '#gkt-sidebar-tab:hover{background:#2d1a4e;color:#c4b5fd;box-shadow:-6px 0 24px rgba(139,92,246,0.35);}',
-        '#gkt-sidebar-iframe{width:320px;height:100vh;border:none;flex-shrink:0;display:block;box-shadow:-8px 0 40px rgba(0,0,0,0.7);}',
+        '#gkt-sidebar{position:fixed;top:0;right:0;bottom:0;left:auto;z-index:2147483647;display:flex;align-items:center;transition:all 0.36s cubic-bezier(0.4,0,0.2,1);}',
+        '#gkt-sidebar-tab{width:24px;height:64px;background:#1c0938;border:1px solid rgba(139,92,246,0.45);border-right:none;border-radius:8px 0 0 8px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#a78bfa;font-size:20px;padding:0;flex-shrink:0;box-shadow:-4px 0 20px rgba(139,92,246,0.2);transition:background 0.2s,color 0.2s;}',
+        '#gkt-sidebar-tab:hover{background:#2d1a4e;color:#c4b5fd;}',
+        '#gkt-sidebar-iframe{border:none;flex-shrink:0;display:block;transition:width 0.36s cubic-bezier(0.4,0,0.2,1),height 0.36s cubic-bezier(0.4,0,0.2,1);box-shadow:-8px 0 40px rgba(0,0,0,0.7);}',
       ].join('');
       document.head.appendChild(style);
 
-      // Sidebar container
+      // Container: tab + iframe
       var container = document.createElement('div');
       container.id = 'gkt-sidebar';
 
-      // Collapse / expand tab
       var tab = document.createElement('button');
       tab.id = 'gkt-sidebar-tab';
       tab.type = 'button';
-      tab.innerHTML = '&#8249;'; // ‹  starts collapsed → ‹ means "open me"
+      tab.innerHTML = '&#8249;'; // ‹ = "open me"
       tab.title = 'Open assistant';
-      tab.setAttribute('aria-label', 'Toggle sidebar');
+      tab.setAttribute('aria-label', 'Toggle assistant');
 
-      // Iframe
       var iframe = document.createElement('iframe');
       iframe.id = 'gkt-sidebar-iframe';
       iframe.src = src;
@@ -69,38 +67,71 @@ export async function GET(_req: NextRequest) {
       container.appendChild(iframe);
       document.body.appendChild(container);
 
-      // Start collapsed — only the arrow tab shows on the right edge
-      var expanded = false;
-      container.style.transform = 'translateX(320px)';
+      // ── state machine: 'hidden' | 'sidebar' | 'fullscreen' ──────────────────
+      var state = 'hidden';
 
-      function collapse() {
-        expanded = false;
-        container.style.transform = 'translateX(320px)';
+      function sendToIframe(msg) {
+        try { iframe.contentWindow && iframe.contentWindow.postMessage(msg, '*'); } catch(e) {}
+      }
+
+      function toHidden() {
+        state = 'hidden';
+        tab.style.display = '';
         tab.innerHTML = '&#8249;'; // ‹
         tab.title = 'Open assistant';
+        container.style.left = 'auto';
+        container.style.display = 'flex';
+        container.style.width = 'auto';
+        container.style.transform = 'translateX(320px)'; // only 24px tab visible
+        iframe.style.width = '320px';
+        iframe.style.height = '100vh';
+        sendToIframe({ type: 'gkt-layout-sidebar' });
       }
 
-      function expand() {
-        expanded = true;
+      function toSidebar() {
+        state = 'sidebar';
+        tab.style.display = '';
+        tab.innerHTML = '&#8650;'; // ↓ = "expand to fullscreen"
+        tab.title = 'Open full screen';
+        container.style.left = 'auto';
+        container.style.display = 'flex';
+        container.style.width = 'auto';
         container.style.transform = 'translateX(0)';
-        tab.innerHTML = '&#8250;'; // ›
-        tab.title = 'Collapse sidebar';
+        iframe.style.width = '320px';
+        iframe.style.height = '100vh';
+        sendToIframe({ type: 'gkt-layout-sidebar' });
       }
+
+      function toFullscreen() {
+        state = 'fullscreen';
+        tab.style.display = 'none';
+        container.style.left = '0';
+        container.style.display = 'block';
+        container.style.width = '100%';
+        container.style.transform = 'none';
+        iframe.style.width = '100%';
+        iframe.style.height = '100vh';
+        sendToIframe({ type: 'gkt-layout-fullscreen' });
+      }
+
+      // Start hidden
+      toHidden();
 
       tab.addEventListener('click', function () {
-        if (expanded) collapse(); else expand();
+        // Any click on the tab opens fullscreen
+        toFullscreen();
       });
 
-      // Allow the iframe to request close/reset via postMessage
+      // postMessage from iframe
       window.addEventListener('message', function (event) {
         try {
-          if (!event || !event.data) return;
-          var data = event.data;
-          if (typeof data !== 'object') return;
-          if (data.type === 'gkt-widget-close') collapse();
-          if (data.type === 'gkt-widget-new-session') {
-            iframe.src = src; // Reset to original src
-            expand();
+          if (!event || !event.data || typeof event.data !== 'object') return;
+          var d = event.data;
+          if (d.type === 'gkt-widget-close')    toHidden();
+          if (d.type === 'gkt-widget-minimize') toSidebar();
+          if (d.type === 'gkt-widget-new-session') {
+            iframe.src = src;
+            toFullscreen();
           }
         } catch (e) { /* ignore */ }
       });

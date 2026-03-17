@@ -9,11 +9,19 @@ export const widgetApi = {
     apiClient.get(`/api/widget/tickets/${id}/messages`, {
       params: { tenant_id, user_email, tenant_product_id },
     }),
-  sendTicketMessage: (id: string, tenant_id: string, user_email: string, body: string, tenant_product_id?: string) =>
+  sendTicketMessage: (
+    id: string,
+    tenant_id: string,
+    user_email: string,
+    body: string,
+    tenant_product_id?: string,
+    attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>
+  ) =>
     apiClient.post(`/api/widget/tickets/${id}/messages`, {
       tenant_id,
       user_email,
       body,
+      attachments: attachments || [],
     }),
 };
 

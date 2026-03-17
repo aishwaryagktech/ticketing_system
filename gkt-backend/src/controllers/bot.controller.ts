@@ -34,13 +34,14 @@ async function ragAnswerWithLlm(args: {
   contexts: Array<{ text: string; score: number }>;
   model: string;
   productName?: string | null;
+  images?: Array<{ mime_type: string; base64: string }>;
 }): Promise<string> {
   const client = getOpenAI();
   if (!client) {
     throw new Error('OPENAI_API_KEY not set');
   }
 
-  const { question, contexts, model, productName } = args;
+  const { question, contexts, model, productName, images } = args;
   const contextBlock = contexts
     .slice(0, 4)
     .map((c, i) => `KB CHUNK ${i + 1} (relevance ${c.score.toFixed(3)}):\n${c.text}`)
@@ -52,17 +53,31 @@ async function ragAnswerWithLlm(args: {
     `Be concise, actionable, and avoid copying long passages verbatim.\n` +
     `If you reference steps, format as numbered steps.\n`;
 
-  const user =
+  const userText =
     `User question:\n${question}\n\n` +
     `Knowledge base context:\n${contextBlock}\n\n` +
     `Write the best possible support answer now.`;
+
+  const userContent: any =
+    images && images.length > 0
+      ? [
+          { type: 'text', text: userText },
+          ...images
+            .filter((im) => im?.base64 && im?.mime_type)
+            .slice(0, 3) // keep it small/cost-safe
+            .map((im) => ({
+              type: 'image_url',
+              image_url: { url: `data:${im.mime_type};base64,${im.base64}` },
+            })),
+        ]
+      : userText;
 
   const resp = await Promise.race([
     client.chat.completions.create({
       model,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: user },
+        { role: 'user', content: userContent },
       ],
       temperature: 0.2,
     }),
@@ -138,9 +153,10 @@ async function appendConversationMessage(args: {
   text: string;
   user_id?: string | null;
   user_email?: string | null;
+  attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>;
   meta?: Partial<{ resolved_by_bot: boolean; turns_count: number; ended_at: Date; handoff_reason: string; handoff_ticket_id: string; model_used: string; kb_articles_used: string[] }>;
 }): Promise<void> {
-  const { tenant_id, tenant_product_id, session_id, from, text, user_id, user_email, meta } = args;
+  const { tenant_id, tenant_product_id, session_id, from, text, user_id, user_email, meta, attachments } = args;
   const author_type = from === 'user' ? 'user' : 'bot';
   const author_id = from === 'user' ? (user_id || user_email || 'widget_user') : 'l0_bot';
   const author_name = from === 'user' ? (user_email || 'User') : 'L0 Bot';
@@ -152,6 +168,7 @@ async function appendConversationMessage(args: {
     author_name,
     body: text,
     is_internal: false,
+    attachments: Array.isArray(attachments) ? attachments : [],
     created_at: new Date(),
   };
 
@@ -426,6 +443,16 @@ export async function chat(req: Request, res: Response): Promise<void> {
   const session_id_in = typeof body.session_id === 'string' && body.session_id ? body.session_id : null;
   const user_id = typeof body.user_id === 'string' ? body.user_id : null;
   const user_email = typeof body.user_email === 'string' ? body.user_email : null;
+  const attachmentsRaw = Array.isArray(body.attachments) ? body.attachments : [];
+  const attachments = attachmentsRaw
+    .map((a: any) => ({
+      filename: String(a?.filename || 'image'),
+      mime_type: String(a?.mime_type || ''),
+      size_bytes: Number(a?.size_bytes || 0),
+      base64: String(a?.base64 || ''),
+    }))
+    .filter((a: any) => a.mime_type.startsWith('image/') && a.base64 && a.base64.length > 20)
+    .slice(0, 3);
 
   if (!tenant_id) {
     res.status(400).json({ error: 'tenant_id required' });
@@ -464,6 +491,7 @@ export async function chat(req: Request, res: Response): Promise<void> {
     text: message,
     user_id,
     user_email,
+    attachments,
   }).catch((e) => console.error('bot conversation append(user) error:', e));
 
   // User previously got "Would you like me to create a ticket?" and now accepts → create handoff
@@ -589,6 +617,7 @@ export async function chat(req: Request, res: Response): Promise<void> {
         contexts,
         model,
         productName: tp?.name,
+        images: attachments.map((a: { mime_type: string; base64: string }) => ({ mime_type: a.mime_type, base64: a.base64 })),
       });
       appendConversationMessage({
         tenant_id,
@@ -909,10 +938,25 @@ export async function getBotConversation(req: Request, res: Response): Promise<v
     }
 
     const messages = ((convo as any).messages as any[]).map((m) => ({
-      id: String(m._id ?? m.id ?? `msg-${Math.random()}`),
-      from: String(m.from ?? 'bot'),
-      text: String(m.text ?? ''),
+      id: String(m.message_id ?? m.id ?? `msg-${Math.random()}`),
+      from:
+        m.author_type === 'system'
+          ? 'system'
+          : m.author_type === 'bot'
+            ? 'bot'
+            : m.author_type === 'user'
+              ? 'user'
+              : 'agent',
+      text: String(m.body ?? ''),
       author_name: m.author_name ?? undefined,
+      attachments: Array.isArray(m.attachments)
+        ? m.attachments.map((a: any) => ({
+            filename: String(a.filename || 'image'),
+            mime_type: String(a.mime_type || ''),
+            size_bytes: Number(a.size_bytes || 0),
+            base64: String(a.base64 || ''),
+          }))
+        : [],
       created_at: m.created_at ?? new Date(),
     }));
 
@@ -920,5 +964,58 @@ export async function getBotConversation(req: Request, res: Response): Promise<v
   } catch (e) {
     console.error('getBotConversation error:', e);
     res.status(500).json({ error: 'Failed to load conversation' });
+  }
+}
+
+/**
+ * POST /api/bot/describe-image
+ * Converts an attached image to a text description using GPT-4o vision.
+ * Used by the voice agent so the Realtime API (which only accepts text/audio input)
+ * can still "see" images the user shares during a voice session.
+ */
+export async function describeImage(req: Request, res: Response): Promise<void> {
+  const { base64, mime_type, context } = (req.body || {}) as {
+    base64?: string;
+    mime_type?: string;
+    context?: string;
+  };
+
+  if (!base64 || !mime_type) {
+    res.status(400).json({ error: 'base64 and mime_type are required' });
+    return;
+  }
+
+  const client = getOpenAI();
+  if (!client) {
+    res.status(503).json({ error: 'OpenAI not configured' });
+    return;
+  }
+
+  try {
+    const prompt =
+      context
+        ? `${context}\n\nDescribe this image in detail, focusing on anything relevant to a technical support context.`
+        : 'Describe this image in detail. Focus on error messages, UI elements, screenshots, or any technical content visible.';
+
+    const completion = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: `data:${mime_type};base64,${base64}` } },
+          ],
+        },
+      ],
+      max_tokens: 400,
+    });
+
+    const description =
+      completion.choices[0]?.message?.content?.trim() || 'Unable to analyse image.';
+    res.json({ description });
+  } catch (e: any) {
+    console.error('describeImage error:', e);
+    res.status(500).json({ error: 'Failed to analyse image' });
   }
 }

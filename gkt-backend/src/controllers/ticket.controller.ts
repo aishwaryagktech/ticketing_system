@@ -867,6 +867,14 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
               author_name: m.author_name && m.author_type === 'agent' ? decryptForDisplay(m.author_name) : undefined,
               text: decryptForDisplay(m.body),
               is_internal: m.is_internal || false,
+              attachments: Array.isArray(m.attachments)
+                ? m.attachments.map((a: any) => ({
+                    filename: String(a.filename || 'image'),
+                    mime_type: String(a.mime_type || ''),
+                    size_bytes: Number(a.size_bytes || 0),
+                    base64: String(a.base64 || ''),
+                  }))
+                : [],
               created_at: m.created_at ? new Date(m.created_at) : new Date(),
             }))
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());

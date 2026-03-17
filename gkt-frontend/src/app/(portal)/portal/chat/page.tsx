@@ -15,6 +15,7 @@ interface Message {
   author_name?: string;
   bold_prefix?: string;
   created_at?: string | Date;
+  attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>;
 }
 
 const VOICE_API_BASE =
@@ -62,6 +63,7 @@ export default function PortalChatPage() {
   const [welcomeLoading, setWelcomeLoading] = useState(true);
   const [error, setError] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>(DEFAULT_SUGGESTIONS);
+  const [pendingAttachments, setPendingAttachments] = useState<Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>>([]);
 
   // ─── voice state ──────────────────────────────────────────────────────────
   const [voiceActive, setVoiceActive] = useState(false);
@@ -75,6 +77,8 @@ export default function PortalChatPage() {
   const voiceStreamRef = useRef<MediaStream | null>(null);
   const voiceBotItemIdRef = useRef('');
   const voiceBotItemTextRef = useRef('');
+  // Cancels any in-flight startVoiceSession() when user taps stop.
+  const voiceSessionSeqRef = useRef(0);
   // Function-call tracking (raise_support_ticket tool)
   const voiceFnCallIdRef = useRef('');
   const voiceFnCallArgsRef = useRef('');
@@ -91,8 +95,48 @@ export default function PortalChatPage() {
   const conversationClosedRef = useRef(false);
   const sessionStorageKey = tenantId && tenantProductId ? `gkt_bot_session_${tenantId}_${tenantProductId}` : null;
 
+  // ─── layout mode (sidebar = 320px panel | fullscreen = two-column) ─────────
+  const [layoutMode, setLayoutMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
+  // Stable ref so paste/resize handlers can call addAttachmentsFromFiles w/o deps
+  const addAttachmentsRef = useRef<(files: FileList | null) => Promise<void>>(async () => {});
+
   // ─── mount ────────────────────────────────────────────────────────────────
   useEffect(() => { setMounted(true); }, []);
+
+  // ─── layout listener (parent widget.js tells us to switch layout) ─────────
+  useEffect(() => {
+    if (!hasWindow) return;
+    const handler = (e: MessageEvent) => {
+      if (!e.data || typeof e.data !== 'object') return;
+      if (e.data.type === 'gkt-layout-fullscreen') setLayoutMode('fullscreen');
+      if (e.data.type === 'gkt-layout-sidebar')    setLayoutMode('sidebar');
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasWindow]);
+
+  // ─── paste-image handler ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!hasWindow) return;
+    const handler = (e: ClipboardEvent) => {
+      if (!e.clipboardData) return;
+      const imageItems = Array.from(e.clipboardData.items).filter((item) =>
+        item.type.startsWith('image/')
+      );
+      if (imageItems.length === 0) return;
+      const fileArr = imageItems
+        .map((item) => item.getAsFile())
+        .filter(Boolean) as File[];
+      if (fileArr.length === 0) return;
+      const dt = new DataTransfer();
+      fileArr.forEach((f) => dt.items.add(f));
+      addAttachmentsRef.current(dt.files);
+    };
+    window.addEventListener('paste', handler);
+    return () => window.removeEventListener('paste', handler);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasWindow]);
 
   // ─── initial conversation load ────────────────────────────────────────────
   useEffect(() => {
@@ -117,6 +161,7 @@ export default function PortalChatPage() {
                 from: (m.from === 'agent' ? 'bot' : m.from) as Message['from'],
                 text: String(m.text ?? ''),
                 author_name: m.author_name,
+                attachments: Array.isArray(m.attachments) ? m.attachments : [],
                 created_at: m.created_at,
               }))
             );
@@ -274,17 +319,109 @@ export default function PortalChatPage() {
     return m.text;
   };
 
+  async function readFileToBase64(file: File): Promise<{ filename: string; mime_type: string; size_bytes: number; base64: string }> {
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        // result is a data URL: data:<mime>;base64,<...>
+        const idx = result.indexOf('base64,');
+        resolve(idx >= 0 ? result.slice(idx + 'base64,'.length) : '');
+      };
+      reader.readAsDataURL(file);
+    });
+    return {
+      filename: file.name || 'image',
+      mime_type: file.type || 'image/png',
+      size_bytes: file.size || 0,
+      base64,
+    };
+  }
+
+  async function addAttachmentsFromFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const list = Array.from(files).filter((f) => f.type.startsWith('image/')).slice(0, 3);
+    const encoded = await Promise.all(list.map((f) => readFileToBase64(f)));
+    const cleaned = encoded.filter((a) => a.base64 && a.base64.length > 20);
+    if (cleaned.length === 0) return;
+    setPendingAttachments((prev) => [...prev, ...cleaned].slice(0, 3));
+
+    // If voice is active: describe each image via backend (vision → text) and
+    // inject the description as a text turn into the Realtime session.
+    // The Realtime API doesn't accept image_url content; text description is the workaround.
+    const dc = voiceDcRef.current;
+    if (voiceActive && dc && dc.readyState === 'open') {
+      for (const a of cleaned) {
+        try {
+          const descRes = await fetch(`${VOICE_API_BASE}/api/bot/describe-image`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              base64: a.base64,
+              mime_type: a.mime_type,
+              context: 'user support issue',
+            }),
+          });
+          if (descRes.ok) {
+            const { description } = await descRes.json() as { description: string };
+            const currentDc = voiceDcRef.current;
+            if (currentDc && currentDc.readyState === 'open') {
+              currentDc.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'message',
+                  role: 'user',
+                  content: [{
+                    type: 'input_text',
+                    text: `[User shared an image. Image analysis: ${description}]`,
+                  }],
+                },
+              }));
+              currentDc.send(JSON.stringify({ type: 'response.create' }));
+            }
+          }
+        } catch { /* ignore — don't break UI if describe fails */ }
+      }
+    }
+  }
+  // Keep ref in sync so paste handler can call this without stale closure issues
+  addAttachmentsRef.current = addAttachmentsFromFiles;
+
   // ─── voice functions ──────────────────────────────────────────────────────
   function stopVoiceSession() {
-    if (voiceDcRef.current) { try { voiceDcRef.current.close(); } catch { /* ignore */ } voiceDcRef.current = null; }
-    if (voicePcRef.current) { try { voicePcRef.current.close(); } catch { /* ignore */ } voicePcRef.current = null; }
-    if (voiceStreamRef.current) { voiceStreamRef.current.getTracks().forEach((t) => t.stop()); voiceStreamRef.current = null; }
-    if (voiceAudioRef.current) { voiceAudioRef.current.srcObject = null; }
+    // Invalidate any in-flight startVoiceSession()
+    voiceSessionSeqRef.current += 1;
+
+    if (voiceDcRef.current) {
+      try { voiceDcRef.current.onmessage = null; } catch { /* ignore */ }
+      try { voiceDcRef.current.onopen = null; } catch { /* ignore */ }
+      try { voiceDcRef.current.onclose = null; } catch { /* ignore */ }
+      try { voiceDcRef.current.close(); } catch { /* ignore */ }
+      voiceDcRef.current = null;
+    }
+    if (voicePcRef.current) {
+      try { voicePcRef.current.ontrack = null; } catch { /* ignore */ }
+      try { voicePcRef.current.onicecandidate = null; } catch { /* ignore */ }
+      try { voicePcRef.current.onconnectionstatechange = null; } catch { /* ignore */ }
+      try { voicePcRef.current.close(); } catch { /* ignore */ }
+      voicePcRef.current = null;
+    }
+    if (voiceStreamRef.current) {
+      voiceStreamRef.current.getTracks().forEach((t) => t.stop());
+      voiceStreamRef.current = null;
+    }
+    if (voiceAudioRef.current) {
+      try { voiceAudioRef.current.pause(); } catch { /* ignore */ }
+      voiceAudioRef.current.srcObject = null;
+      try { (voiceAudioRef.current as any).src = ''; } catch { /* ignore */ }
+    }
     voiceBotItemIdRef.current = '';
     voiceBotItemTextRef.current = '';
   }
 
   async function startVoiceSession() {
+    const seq = (voiceSessionSeqRef.current += 1);
     setVoiceStatus('connecting');
     setVoiceError('');
     try {
@@ -293,11 +430,13 @@ export default function PortalChatPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tenant_id: tenantId, tenant_product_id: tenantProductId, user_email: userEmail }),
       });
+      if (seq !== voiceSessionSeqRef.current) return;
       if (!tokenRes.ok) {
         const eb = await tokenRes.json().catch(() => ({}));
         throw new Error((eb as any).error || 'Failed to get voice token');
       }
       const { client_secret } = await tokenRes.json() as { client_secret: any };
+      if (seq !== voiceSessionSeqRef.current) return;
 
       if (!voiceAudioRef.current) {
         const audio = document.createElement('audio');
@@ -311,6 +450,7 @@ export default function PortalChatPage() {
       pc.ontrack = (e) => { if (voiceAudioRef.current) voiceAudioRef.current.srcObject = e.streams[0]; };
 
       const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (seq !== voiceSessionSeqRef.current) { ms.getTracks().forEach((t) => t.stop()); return; }
       voiceStreamRef.current = ms;
       pc.addTrack(ms.getTracks()[0]);
 
@@ -464,7 +604,9 @@ export default function PortalChatPage() {
       };
 
       const offer = await pc.createOffer();
+      if (seq !== voiceSessionSeqRef.current) return;
       await pc.setLocalDescription(offer);
+      if (seq !== voiceSessionSeqRef.current) return;
 
       const sdpRes = await fetch(
         'https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
@@ -474,14 +616,19 @@ export default function PortalChatPage() {
           headers: { Authorization: `Bearer ${client_secret.value}`, 'Content-Type': 'application/sdp' },
         }
       );
+      if (seq !== voiceSessionSeqRef.current) return;
       if (!sdpRes.ok) throw new Error('Failed to connect to OpenAI Realtime');
-      await pc.setRemoteDescription({ type: 'answer' as RTCSdpType, sdp: await sdpRes.text() });
+      const answerText = await sdpRes.text();
+      if (seq !== voiceSessionSeqRef.current) return;
+      await pc.setRemoteDescription({ type: 'answer' as RTCSdpType, sdp: answerText });
+      if (seq !== voiceSessionSeqRef.current) return;
       setVoiceStatus('active');
     } catch (e: any) {
       console.error('[Voice]', e);
       setVoiceError(e?.message || 'Failed to start voice');
       setVoiceStatus('error');
       setVoiceActive(false);
+      stopVoiceSession();
     }
   }
 
@@ -502,12 +649,14 @@ export default function PortalChatPage() {
   const handleSend = async () => {
     if (view === 'tickets') {
       const text = input.trim();
-      if (!text || sending || !activeTicketId || !tenantId || !userEmail) return;
+      if ((text.length === 0 && pendingAttachments.length === 0) || sending || !activeTicketId || !tenantId || !userEmail) return;
       setSending(true);
       setInput('');
       setError('');
       try {
-        await widgetApi.sendTicketMessage(activeTicketId, tenantId, userEmail, text, tenantProductId);
+        const atts = pendingAttachments;
+        setPendingAttachments([]);
+        await widgetApi.sendTicketMessage(activeTicketId, tenantId, userEmail, text, tenantProductId, atts);
         const res = await widgetApi.getTicketMessages(activeTicketId, tenantId, userEmail, tenantProductId);
         const msgs = (res.data?.messages as any[]) || [];
         setMessages(msgs.map((m: any) => ({
@@ -516,6 +665,7 @@ export default function PortalChatPage() {
           author_name: m.author_name || undefined,
           text: String(m.text || ''),
           bold_prefix: m.bold_prefix,
+          attachments: Array.isArray(m.attachments) ? m.attachments : [],
           created_at: m.created_at,
         })));
       } catch (e: any) {
@@ -526,13 +676,15 @@ export default function PortalChatPage() {
       return;
     }
     const text = input.trim();
-    if (!text || sending || ended) return;
+    if ((text.length === 0 && pendingAttachments.length === 0) || sending || ended) return;
     if (!tenantId) { setError('Missing tenant_id'); return; }
     setInput('');
     setError('');
     setSuggestions([]);
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setMessages((prev) => [...prev, { id, from: 'user', text }]);
+    const atts = pendingAttachments;
+    setPendingAttachments([]);
+    setMessages((prev) => [...prev, { id, from: 'user', text, attachments: atts }]);
     setSending(true);
     try {
       const res = await botApi.chat({
@@ -542,6 +694,7 @@ export default function PortalChatPage() {
         session_id: sessionId ?? undefined,
         user_id: userId,
         user_email: userEmail,
+        attachments: atts,
       });
       const replyText = (res.data?.reply as string) || 'Bot did not return a reply.';
       if (typeof res.data?.session_id === 'string') {
@@ -572,6 +725,11 @@ export default function PortalChatPage() {
     window.parent?.postMessage({ type: 'gkt-widget-close' }, '*');
   };
 
+  const handleMinimize = () => {
+    if (!hasWindow) return;
+    window.parent?.postMessage({ type: 'gkt-widget-minimize' }, '*');
+  };
+
   const handleNewChat = () => {
     stopVoiceSession();
     setVoiceActive(false);
@@ -583,6 +741,7 @@ export default function PortalChatPage() {
     setSessionId(null);
     if (hasWindow && sessionStorageKey) sessionStorage.removeItem(sessionStorageKey);
     setEnded(false);
+    setPendingAttachments([]);
     setMessages([{ id: 'welcome', from: 'bot', text: 'Hi! How can I help you today?' }]);
     setSuggestions(DEFAULT_SUGGESTIONS);
     setError('');
@@ -594,7 +753,9 @@ export default function PortalChatPage() {
       })
       .catch(() => {})
       .finally(() => setWelcomeLoading(false));
-    if (hasWindow) window.parent?.postMessage({ type: 'gkt-widget-new-session' }, '*');
+    // In fullscreen mode, don't reload the iframe (it briefly shows sidebar layout before parent message arrives).
+    // Just reset local state.
+    if (hasWindow && layoutMode !== 'fullscreen') window.parent?.postMessage({ type: 'gkt-widget-new-session' }, '*');
   };
 
   const loadTickets = async () => {
@@ -628,6 +789,7 @@ export default function PortalChatPage() {
         author_name: m.author_name || undefined,
         text: String(m.text || ''),
         bold_prefix: m.bold_prefix,
+        attachments: Array.isArray(m.attachments) ? m.attachments : [],
         created_at: m.created_at,
       })));
     } catch (e: any) { setError(e?.message || 'Failed to load ticket messages'); }
@@ -698,7 +860,254 @@ export default function PortalChatPage() {
     conversationClosed ||
     ['resolved', 'closed'].includes((activeTicket?.status || '').toLowerCase());
 
-  // ─── render ───────────────────────────────────────────────────────────────
+  // ─── fullscreen 2-column layout ──────────────────────────────────────────
+  if (layoutMode === 'fullscreen') {
+    const fsFont = 'system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+    const fsInput = (disabled: boolean, placeholder: string) => (
+      <div style={{ padding: '10px 20px 14px', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        <InputRow
+          value={input}
+          onChange={handleTextareaChange}
+          onKeyDown={handleKeyDown}
+          onSend={handleSend}
+          disabled={disabled}
+          placeholder={placeholder}
+          sending={sending}
+          textareaRef={textareaRef}
+          primary={primaryColor}
+          voiceActive={voiceActive}
+          onVoiceToggle={toggleVoice}
+          onPickImages={addAttachmentsFromFiles}
+          pendingAttachments={pendingAttachments}
+          onRemoveAttachment={(idx) => setPendingAttachments((p) => p.filter((_, i) => i !== idx))}
+        />
+      </div>
+    );
+
+    return (
+      <div style={{ width: '100%', height: '100vh', background: '#0f0e0d', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: fsFont, color: '#f1f5f9' }}>
+
+        {/* ── FULLSCREEN HEADER ── */}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '0 20px', height: 54, flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,7,7,0.97)', gap: 12 }}>
+          {/* Logo + name */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginRight: 8 }}>
+            <div style={{ width: 32, height: 32, background: `linear-gradient(135deg, ${orbColor}, #2e1065)`, borderRadius: 9, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: `0 0 12px ${orbColor}44`, transition: 'all 0.4s', flexShrink: 0 }}>
+              {logo ? <img src={logo} alt="logo" style={{ width: '100%', height: '100%', borderRadius: 8, objectFit: 'cover' }} /> : <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#e9d5ff' }} />}
+            </div>
+            <span style={{ fontSize: 15, fontWeight: 700, color: '#f1f5f9', letterSpacing: '-0.01em' }}>Support Bot</span>
+          </div>
+          {/* Centred tab switcher */}
+          <div style={{ display: 'flex', gap: 4, flex: 1, justifyContent: 'center' }}>
+            {(['bot', 'tickets'] as const).map((v) => (
+              <button key={v} type="button"
+                onClick={() => { setView(v); setActiveTicketId(null); if (v === 'tickets') loadTickets(); }}
+                style={{ padding: '5px 18px', borderRadius: 8, border: `1px solid ${view === v ? `${primaryColor}60` : 'rgba(255,255,255,0.08)'}`, background: view === v ? `${primaryColor}18` : 'transparent', color: view === v ? '#e2e8f0' : '#475569', fontSize: 13, fontWeight: view === v ? 600 : 400, cursor: 'pointer', transition: 'all 0.15s' }}>
+                {v === 'bot' ? 'Chat' : 'My Tickets'}
+              </button>
+            ))}
+          </div>
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <HdrBtn onClick={handleNewChat} title="New chat">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            </HdrBtn>
+            <HdrBtn onClick={handleMinimize} title="Minimize to sidebar">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="5" y1="19" x2="19" y2="19" /></svg>
+            </HdrBtn>
+            <HdrBtn onClick={handleClose} title="Close">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            </HdrBtn>
+          </div>
+        </div>
+
+        {/* ── FULLSCREEN BODY: two columns ── */}
+        <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+
+          {/* ─── LEFT (2/3): voice orb centred ─── */}
+          <div
+            style={{
+              flex: 2,
+              borderRight: '1px solid rgba(255,255,255,0.07)',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'radial-gradient(900px circle at 45% 30%, rgba(124,58,237,0.12), rgba(0,0,0,0) 55%), rgba(4,3,3,0.55)',
+              minWidth: 0,
+            }}
+          >
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '22px 28px', minHeight: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+                {/* Large orb */}
+                <div style={{ position: 'relative', width: 220, height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {(voiceActive || voiceListening || voiceBotSpeaking) && <>
+                    <div style={{ position: 'absolute', inset: -30, borderRadius: '50%', border: `1.5px solid ${orbColor}38`, animation: `skRipple1 ${voiceListening ? '0.9s' : '1.6s'} ease-out infinite`, pointerEvents: 'none' }} />
+                    <div style={{ position: 'absolute', inset: -14, borderRadius: '50%', border: `1.5px solid ${orbColor}50`, animation: `skRipple1 ${voiceListening ? '0.9s' : '1.6s'} ease-out infinite 0.45s`, pointerEvents: 'none' }} />
+                  </>}
+                  <button
+                    type="button"
+                    onClick={toggleVoice}
+                    disabled={voiceStatus === 'connecting'}
+                    aria-label={voiceActive ? 'Stop voice' : 'Start voice'}
+                    style={{
+                      width: 170,
+                      height: 170,
+                      borderRadius: '50%',
+                      background: voiceActive
+                        ? `radial-gradient(circle at 35% 30%, ${orbColor}ee, #1e0040)`
+                        : 'radial-gradient(circle at 35% 30%, #6d28d9cc, #150025)',
+                      border: `1.5px solid ${orbColor}55`,
+                      cursor: voiceStatus === 'connecting' ? 'wait' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      boxShadow: voiceActive
+                        ? `0 0 70px ${orbColor}66, 0 10px 44px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.12)`
+                        : '0 0 28px #6d28d944, 0 10px 34px rgba(0,0,0,0.6)',
+                      transition: 'all 0.35s',
+                    }}
+                  >
+                    <svg width="56" height="56" viewBox="0 0 24 24" fill="white" opacity={voiceStatus === 'connecting' ? 0.45 : 1}>
+                      <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
+                      <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Status + controls */}
+                <span style={{ fontSize: 13, fontWeight: 600, color: voiceStatus === 'error' ? '#fca5a5' : voiceListening ? '#fca5a5' : voiceBotSpeaking ? '#86efac' : '#94a3b8' }}>
+                  {orbLabel}
+                </span>
+                {voiceError && <span style={{ fontSize: 11, color: '#fca5a5', textAlign: 'center', lineHeight: 1.5, maxWidth: 420 }}>{voiceError}</span>}
+                {voiceActive && (
+                  <button type="button" onClick={toggleVoice}
+                    style={{ padding: '8px 22px', borderRadius: 999, border: '1px solid rgba(239,68,68,0.35)', background: 'rgba(239,68,68,0.07)', color: '#fca5a5', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+                    Stop voice
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Resolve / raise-ticket actions (kept in voice panel) */}
+            {showActions && (
+              <div style={{ padding: '16px 20px 20px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => handleSendText('yes, that resolved it')} disabled={sending}
+                  style={{ padding: '9px 14px', borderRadius: 12, border: '1px solid rgba(34,197,94,0.3)', background: 'rgba(34,197,94,0.07)', color: '#86efac', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+                  ✓ Resolved
+                </button>
+                <button type="button" onClick={handleRaiseTicket} disabled={sending}
+                  style={{ padding: '9px 14px', borderRadius: 12, border: `1px solid ${primaryColor}44`, background: `${primaryColor}11`, color: '#a78bfa', fontSize: 12, cursor: 'pointer', fontWeight: 600 }}>
+                  Raise ticket
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* ─── RIGHT (1/3): conversation + quick asks ─── */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {isTicketView ? (
+              activeTicketId ? (
+                <>
+                  {/* Ticket info bar */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 20px', borderBottom: '1px solid rgba(255,255,255,0.06)', flexShrink: 0, background: 'rgba(6,5,5,0.7)' }}>
+                    <button type="button" onClick={() => { setActiveTicketId(null); loadTickets(); }} style={{ background: 'none', border: 'none', color: '#a78bfa', cursor: 'pointer', fontSize: 13, padding: '2px 6px', borderRadius: 6 }}>← Back</button>
+                    <span style={{ fontSize: 12, color: '#94a3b8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeTicket?.ticket_number} · {activeTicket?.subject}</span>
+                    <button type="button" onClick={() => { loadTickets(); if (activeTicketId) loadTicketMessages(activeTicketId); }} style={{ background: 'none', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: '#64748b', cursor: 'pointer', fontSize: 10, padding: '3px 8px' }}>Refresh</button>
+                  </div>
+                  {isConvClosed && <div style={{ padding: '6px 20px', background: 'rgba(22,163,74,0.12)', borderBottom: '1px solid rgba(22,163,74,0.2)', fontSize: 12, color: '#86efac', textAlign: 'center' }}>Conversation closed</div>}
+                  {!isConvClosed && activeTicket && (
+                    <div style={{ padding: '6px 20px', background: 'rgba(99,102,241,0.08)', borderBottom: '1px solid rgba(99,102,241,0.15)', fontSize: 12, color: '#a5b4fc', textAlign: 'center' }}>
+                      {!activeTicket.assigned_to ? 'Waiting for an agent…' : activeTicket.status === 'in_progress' ? 'Chatting with a support agent.' : 'Agent assigned — will respond shortly.'}
+                    </div>
+                  )}
+                  <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 28px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 }}>
+                    {messages.map((m) => <MessageBubble key={m.id} m={m} primary={primaryColor} renderContent={renderMessageContent} />)}
+                  </div>
+                  {!isConvClosed && fsInput(false, 'Reply…')}
+                </>
+              ) : (
+                /* Ticket list */
+                <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px', minHeight: 0 }}>
+                  <div style={{ fontSize: 11, color: '#475569', fontWeight: 700, marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.07em' }}>My tickets</div>
+                  {ticketLoading ? <SkeletonList /> : ticketList.length === 0 ? (
+                    <div style={{ color: '#475569', fontSize: 14, textAlign: 'center', marginTop: 64 }}>No tickets yet.</div>
+                  ) : ticketList.map((t) => (
+                    <button key={t.id} type="button" onClick={() => { setActiveTicketId(t.id); loadTicketMessages(t.id); }}
+                      style={{ width: '100%', textAlign: 'left', padding: '14px 18px', marginBottom: 10, borderRadius: 14, border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.03)', color: '#e2e8f0', cursor: 'pointer', transition: 'background 0.15s' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: '#a78bfa' }}>{t.ticket_number}</span>
+                        <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 99, background: t.status === 'in_progress' ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.06)', color: t.status === 'in_progress' ? '#a5b4fc' : '#64748b', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{t.status.replace('_', ' ')}</span>
+                      </div>
+                      <div style={{ fontSize: 14, color: '#cbd5e1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.subject}</div>
+                    </button>
+                  ))}
+                </div>
+              )
+            ) : (
+              /* Chat messages */
+              <>
+                <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '18px 18px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 }}>
+                  {hasWindow && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
+                      <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e' }} />
+                      <span style={{ fontSize: 10, color: '#475569' }}>{(() => { try { return window.location.hostname || 'localhost'; } catch { return 'localhost'; } })()}</span>
+                    </div>
+                  )}
+
+                  {/* Quick asks live inside the chat column */}
+                  {!ended && suggestions.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                      {suggestions.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => { setSuggestions((p) => p.filter((x) => x !== s)); handleSendText(s); }}
+                          style={{
+                            padding: '7px 10px',
+                            borderRadius: 999,
+                            border: '1px solid rgba(139,92,246,0.28)',
+                            background: 'rgba(139,92,246,0.06)',
+                            color: '#a78bfa',
+                            fontSize: 12,
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            transition: 'background 0.15s',
+                            maxWidth: '100%',
+                          }}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {welcomeLoading && messages.length === 1 && messages[0].id === 'welcome' ? (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {[0, 0.2, 0.4].map((d) => <div key={d} style={{ width: 8, height: 8, borderRadius: '50%', background: '#7c3aed', animation: `skDot 1s infinite ${d}s` }} />)}
+                    </div>
+                  ) : (
+                    messages.map((m) => <MessageBubble key={m.id} m={m} primary={primaryColor} renderContent={renderMessageContent} />)
+                  )}
+                  {sending && (
+                    <div style={{ display: 'flex', gap: 5 }}>
+                      {[0, 0.18, 0.36].map((d) => <div key={d} style={{ width: 7, height: 7, borderRadius: '50%', background: '#475569', animation: `skDot 1s infinite ${d}s` }} />)}
+                    </div>
+                  )}
+                  {error && <div style={{ fontSize: 12, color: '#fca5a5' }}>{error}</div>}
+                </div>
+                {fsInput(ended, ended ? 'Conversation ended' : 'Ask a question…')}
+              </>
+            )}
+          </div>
+        </div>
+
+        <style>{`
+          @keyframes skRipple1 { 0% { transform:scale(1); opacity:1; } 100% { transform:scale(1.9); opacity:0; } }
+          @keyframes skDot { 0%,80%,100% { transform:scale(0.6); opacity:0.4; } 40% { transform:scale(1); opacity:1; } }
+        `}</style>
+      </div>
+    );
+  }
+
+  // ─── sidebar (320 px) render ──────────────────────────────────────────────
   return (
     <div
       style={{
@@ -771,6 +1180,11 @@ export default function PortalChatPage() {
               <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
             </svg>
           </HdrBtn>
+          <HdrBtn onClick={handleMinimize} title="Minimize to sidebar">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <line x1="5" y1="19" x2="19" y2="19" />
+            </svg>
+          </HdrBtn>
           <HdrBtn onClick={handleClose} title="Close">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
               <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -811,6 +1225,7 @@ export default function PortalChatPage() {
                   borderRadius: '50%',
                   border: `1.5px solid ${orbColor}40`,
                   animation: `skRipple1 ${voiceListening ? '0.9s' : '1.6s'} ease-out infinite`,
+                  pointerEvents: 'none',
                 }}
               />
               <div
@@ -820,6 +1235,7 @@ export default function PortalChatPage() {
                   borderRadius: '50%',
                   border: `1.5px solid ${orbColor}55`,
                   animation: `skRipple1 ${voiceListening ? '0.9s' : '1.6s'} ease-out infinite 0.45s`,
+                  pointerEvents: 'none',
                 }}
               />
             </>
@@ -967,6 +1383,9 @@ export default function PortalChatPage() {
                 primary={primaryColor}
                 voiceActive={voiceActive}
                 onVoiceToggle={toggleVoice}
+                onPickImages={addAttachmentsFromFiles}
+                pendingAttachments={pendingAttachments}
+                onRemoveAttachment={(idx) => setPendingAttachments((prev) => prev.filter((_, i) => i !== idx))}
               />
             </div>
           </>
@@ -1105,6 +1524,9 @@ export default function PortalChatPage() {
               primary={primaryColor}
               voiceActive={voiceActive}
               onVoiceToggle={toggleVoice}
+              onPickImages={addAttachmentsFromFiles}
+              pendingAttachments={pendingAttachments}
+              onRemoveAttachment={(idx) => setPendingAttachments((prev) => prev.filter((_, i) => i !== idx))}
             />
           </div>
         </>
@@ -1187,7 +1609,7 @@ function TabBtn({ children, active, onClick, primary }: { children: React.ReactN
 function MessageBubble({
   m, primary, renderContent,
 }: {
-  m: { id: string; from: string; text: string; author_name?: string; bold_prefix?: string };
+  m: { id: string; from: string; text: string; author_name?: string; bold_prefix?: string; attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }> };
   primary: string;
   renderContent: (m: any) => React.ReactNode;
 }) {
@@ -1206,6 +1628,7 @@ function MessageBubble({
   }
   const isUser = m.from === 'user';
   const senderLabel = isUser ? 'You' : (m.author_name || 'Bot');
+  const atts = Array.isArray(m.attachments) ? m.attachments : [];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: isUser ? 'flex-end' : 'flex-start' }}>
       <span style={{ fontSize: 9, color: '#475569', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '0.05em', paddingLeft: 2, paddingRight: 2 }}>
@@ -1219,6 +1642,26 @@ function MessageBubble({
         color: isUser ? '#e9d5ff' : '#cbd5e1',
       }}>
         {renderContent(m)}
+        {atts.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+            {atts.map((a, i) => (
+              <a
+                key={`${a.filename}-${i}`}
+                href={`data:${a.mime_type};base64,${a.base64}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ display: 'block', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)' }}
+                title={a.filename}
+              >
+                <img
+                  src={`data:${a.mime_type};base64,${a.base64}`}
+                  alt={a.filename}
+                  style={{ width: 140, height: 90, objectFit: 'cover', display: 'block' }}
+                />
+              </a>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1226,6 +1669,7 @@ function MessageBubble({
 
 function InputRow({
   value, onChange, onKeyDown, onSend, disabled, placeholder, sending, textareaRef, primary, voiceActive, onVoiceToggle,
+  onPickImages, pendingAttachments, onRemoveAttachment,
 }: {
   value: string;
   onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
@@ -1238,13 +1682,56 @@ function InputRow({
   primary: string;
   voiceActive: boolean;
   onVoiceToggle: () => void;
+  onPickImages: (files: FileList | null) => void;
+  pendingAttachments: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>;
+  onRemoveAttachment: (idx: number) => void;
 }) {
+  const fileRef = React.useRef<HTMLInputElement | null>(null);
   return (
-    <div style={{
-      display: 'flex', alignItems: 'flex-end', gap: 6,
-      background: 'rgba(255,255,255,0.05)', borderRadius: 12,
-      border: '1px solid rgba(255,255,255,0.09)', padding: '6px 8px',
-    }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {pendingAttachments.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {pendingAttachments.map((a, idx) => (
+            <div key={`${a.filename}-${idx}`} style={{ position: 'relative' }}>
+              <img
+                src={`data:${a.mime_type};base64,${a.base64}`}
+                alt={a.filename}
+                style={{ width: 70, height: 46, objectFit: 'cover', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)' }}
+              />
+              <button
+                type="button"
+                onClick={() => onRemoveAttachment(idx)}
+                title="Remove"
+                style={{
+                  position: 'absolute',
+                  top: -6,
+                  right: -6,
+                  width: 18,
+                  height: 18,
+                  borderRadius: 999,
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  background: 'rgba(15,14,13,0.9)',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  lineHeight: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', gap: 6,
+        background: 'rgba(255,255,255,0.05)', borderRadius: 12,
+        border: '1px solid rgba(255,255,255,0.09)', padding: '6px 8px',
+      }}>
       {/* Mic toggle */}
       <button
         type="button"
@@ -1262,6 +1749,39 @@ function InputRow({
         <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z" />
           <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z" />
+        </svg>
+      </button>
+      {/* Attach image */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          onPickImages(e.target.files);
+          if (fileRef.current) fileRef.current.value = '';
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        title="Attach image"
+        style={{
+          width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+          border: '1px solid rgba(255,255,255,0.1)',
+          background: 'transparent',
+          color: '#475569',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="17 8 12 3 7 8" />
+          <line x1="12" y1="3" x2="12" y2="15" />
         </svg>
       </button>
       {/* Textarea */}
@@ -1298,6 +1818,7 @@ function InputRow({
           <polygon points="22 2 15 22 11 13 2 9 22 2" />
         </svg>
       </button>
+      </div>
     </div>
   );
 }

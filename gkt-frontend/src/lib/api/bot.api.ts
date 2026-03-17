@@ -19,6 +19,7 @@ export const botApi = {
     session_id?: string;
     user_id?: string;
     user_email?: string;
+    attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>;
   }) =>
     apiClient.post('/api/bot/chat', {
       message: args.message,
@@ -27,6 +28,7 @@ export const botApi = {
       session_id: args.session_id,
       user_id: args.user_id,
       user_email: args.user_email,
+      attachments: args.attachments || [],
     }),
   handoff: (sessionId: string) =>
     apiClient.post('/api/bot/handoff', { session_id: sessionId }),

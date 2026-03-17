@@ -100,6 +100,14 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
               author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
               text,
               ...(boldPrefix ? { bold_prefix: boldPrefix } : {}),
+              attachments: Array.isArray(m.attachments)
+                ? m.attachments.map((a: any) => ({
+                    filename: String(a.filename || 'image'),
+                    mime_type: String(a.mime_type || ''),
+                    size_bytes: Number(a.size_bytes || 0),
+                    base64: String(a.base64 || ''),
+                  }))
+                : [],
               created_at: m.created_at ? new Date(m.created_at) : new Date(),
             };
           });
@@ -187,18 +195,27 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
 // POST /api/widget/tickets/:id/messages
 export async function createTicketMessage(req: Request, res: Response): Promise<void> {
   const { id } = req.params;
-  const { tenant_id, user_email, body } = (req.body as any) || {};
+  const { tenant_id, user_email, body, attachments } = (req.body as any) || {};
 
   const tenantId = String(tenant_id || '').trim();
   const userEmail = String(user_email || '').trim();
   const text = typeof body === 'string' ? body.trim() : '';
+  const parsedAttachments = (Array.isArray(attachments) ? attachments : [])
+    .map((a: any) => ({
+      filename: String(a?.filename || 'image'),
+      mime_type: String(a?.mime_type || ''),
+      size_bytes: Number(a?.size_bytes || 0),
+      base64: String(a?.base64 || ''),
+    }))
+    .filter((a: any) => a.mime_type.startsWith('image/') && a.base64 && a.base64.length > 20)
+    .slice(0, 3);
 
   if (!tenantId || !userEmail) {
     res.status(400).json({ error: 'tenant_id and user_email are required' });
     return;
   }
-  if (!text) {
-    res.status(400).json({ error: 'body required' });
+  if (!text && parsedAttachments.length === 0) {
+    res.status(400).json({ error: 'body or attachments required' });
     return;
   }
 
@@ -234,6 +251,7 @@ export async function createTicketMessage(req: Request, res: Response): Promise<
         ticket_id: ticket.id,
         from: 'user',
         text,
+        attachments: parsedAttachments,
         created_at: new Date().toISOString(),
       });
     } catch (socketErr) {
@@ -253,6 +271,7 @@ export async function createTicketMessage(req: Request, res: Response): Promise<
           author_name: userEmail,
           body: text,
           is_internal: false,
+          attachments: parsedAttachments,
           created_at: new Date(),
         };
 
@@ -284,6 +303,7 @@ export async function createTicketMessage(req: Request, res: Response): Promise<
       id: comment.id,
       from: 'user',
       text: comment.body,
+      attachments: parsedAttachments,
       created_at: comment.created_at,
     });
   } catch (e) {

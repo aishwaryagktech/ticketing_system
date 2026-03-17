@@ -20,6 +20,7 @@ type ConversationMessage = {
   created_at?: string | Date;
   author_name?: string | null;
   is_internal?: boolean;
+  attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>;
 };
 
 export default function AgentTicketDetailPage() {
@@ -187,6 +188,7 @@ export default function AgentTicketDetailPage() {
           is_internal: m.is_internal || false,
           created_at: m.created_at,
           author_name: m.author_name ?? null,
+          attachments: Array.isArray(m.attachments) ? m.attachments : [],
         })),
       );
     } catch (e: any) {
@@ -943,6 +945,26 @@ export default function AgentTicketDetailPage() {
                             boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
                           }}>
                             {m.text}
+                            {Array.isArray((m as any).attachments) && (m as any).attachments.length > 0 && (
+                              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+                                {(m as any).attachments.map((a: any, i: number) => (
+                                  <a
+                                    key={`${a.filename || 'image'}-${i}`}
+                                    href={`data:${a.mime_type};base64,${a.base64}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{ display: 'block', borderRadius: 12, overflow: 'hidden', border: `1px solid ${bubbleBorder}` }}
+                                    title={a.filename || 'attachment'}
+                                  >
+                                    <img
+                                      src={`data:${a.mime_type};base64,${a.base64}`}
+                                      alt={a.filename || 'attachment'}
+                                      style={{ width: 220, height: 140, objectFit: 'cover', display: 'block' }}
+                                    />
+                                  </a>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );

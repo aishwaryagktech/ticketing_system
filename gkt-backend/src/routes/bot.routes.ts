@@ -9,5 +9,6 @@ router.post('/chat', botController.chat);
 router.post('/handoff', botController.handoff);
 router.post('/voice-token', botController.getVoiceToken);
 router.post('/voice-handoff', botController.voiceHandoff);
+router.post('/describe-image', botController.describeImage);
 
 export default router;
