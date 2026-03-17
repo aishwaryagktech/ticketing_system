@@ -9,7 +9,7 @@ export class GeminiAdapter implements AIAdapter {
   async detectSentiment(text: string): Promise<SentimentResult> {
     throw new Error('Not implemented');
   }
-  async suggestReply(ticket: any, history: any[]): Promise<string[]> {
+  async suggestReply(ticket: any, history: any[], kbContext?: string): Promise<string[]> {
     throw new Error('Not implemented');
   }
   async checkDuplicate(text: string, productId: string): Promise<DuplicateResult> {

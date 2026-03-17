@@ -1,8 +1,29 @@
 import { widgetClient } from './client';
 
 export const botApi = {
-  chat: (message: string, productId: string, sessionId?: string) =>
-    widgetClient.post('/api/bot/chat', { message, product_id: productId, session_id: sessionId }),
+  welcome: (tenantId: string | undefined, tenantProductId: string | undefined) => {
+    const params = new URLSearchParams();
+    if (tenantId) params.set('tenant_id', tenantId);
+    if (tenantProductId) params.set('tenant_product_id', tenantProductId);
+    const qs = params.toString();
+    return widgetClient.get(`/api/bot/welcome-message${qs ? `?${qs}` : ''}`);
+  },
+  chat: (args: {
+    message: string;
+    tenantId: string;
+    tenantProductId: string;
+    sessionId?: string | null;
+    userId?: string;
+    userEmail?: string;
+  }) =>
+    widgetClient.post('/api/bot/chat', {
+      message: args.message,
+      tenant_id: args.tenantId,
+      tenant_product_id: args.tenantProductId,
+      session_id: args.sessionId,
+      user_id: args.userId,
+      user_email: args.userEmail,
+    }),
   handoff: (sessionId: string) =>
     widgetClient.post('/api/bot/handoff', { session_id: sessionId }),
 };

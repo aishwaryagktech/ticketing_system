@@ -66,7 +66,7 @@ export class OpenAIAdapter implements AIAdapter {
     }
   }
 
-  async suggestReply(ticket: any, history: any[]): Promise<string[]> {
+  async suggestReply(ticket: any, history: any[], kbContext?: string): Promise<string[]> {
     const bodyLines: string[] = [];
     bodyLines.push(`Ticket: #${ticket.ticket_number || ticket.id}`);
     bodyLines.push(`Subject: ${ticket.subject}`);
@@ -77,17 +77,31 @@ export class OpenAIAdapter implements AIAdapter {
         bodyLines.push(`${c.is_internal ? 'Internal' : 'User/Agent'}: ${c.body}`);
       });
     }
+    const hasKb = Boolean(kbContext && kbContext.trim());
+    if (hasKb) {
+      bodyLines.push('\n--- Knowledge base (use this to answer the customer) ---');
+      bodyLines.push(kbContext!.trim());
+      bodyLines.push('--- End of knowledge base ---');
+    }
 
     const prompt =
-      'You are an L1 support agent drafting replies.\n' +
-      'Given the ticket and conversation, suggest 3 short, helpful reply drafts.\n' +
-      'Return JSON ONLY: {"replies": ["...", "...", "..."]}.\n\n' +
+      'You are drafting reply options for a human support agent. Each option should read like a real agent reply: direct, helpful, and answering the customer\'s question.\n\n' +
+      (hasKb
+        ? 'WHEN KNOWLEDGE BASE IS PROVIDED:\n' +
+          '- Answer the customer\'s question using the knowledge base above. Do not say "I will look into it" when the KB already has the answer.\n' +
+          '- Give 3 reply options the agent can send as-is. At least 2 must be substantive answers (e.g. list the languages supported, explain the steps, state the feature) based on the KB.\n' +
+          '- Write like a human agent: friendly, clear, and to the point. Example: if they ask "what languages does X support?", reply with the actual list and a short line like "Hope that helps!"\n' +
+          '- One option can be a shorter variant (e.g. same answer in fewer words) or a follow-up (e.g. "Need help with a specific language? Tell me which one.").\n'
+        : 'WHEN NO KNOWLEDGE BASE IS PROVIDED:\n' +
+          '- Suggest 3 short, professional replies: acknowledge their question, offer to look into it, or ask for more details so you can help. Write like a human agent.\n') +
+      'Return JSON ONLY: {"replies": ["...", "...", "..."]}. No other text.\n\n' +
       bodyLines.join('\n');
 
     const resp = await this.client.chat.completions.create({
       model: this.model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.4,
+      response_format: { type: 'json_object' },
     });
 
     const raw = resp.choices?.[0]?.message?.content || '{}';

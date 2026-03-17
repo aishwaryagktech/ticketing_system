@@ -114,7 +114,7 @@ model Product {
 }
 
 model Tenant {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   product_id        String
   name              String
   slug              String
@@ -124,10 +124,11 @@ model Tenant {
   contact_email_hash String?
   employee_count    Int?
   plan_id           String?
-  onboarding_step   String   @default("welcome") // welcome | plan_selected | products | agents | ticket_settings | sla | escalation | kb | ai_bot | channels | branding | notifications | integrations | complete
-  is_active         Boolean  @default(true)
+  onboarding_step   String    @default("welcome") // welcome | plan_selected | products | agents | ticket_settings | sla | escalation | kb | ai_bot | channels | branding | notifications | integrations | complete
+  is_active         Boolean   @default(true)
   created_by        String
-  created_at        DateTime @default(now())
+  created_at        DateTime  @default(now())
+  trial_started_at  DateTime?
 
   product         Product         @relation(fields: [product_id], references: [id])
   plan            BillingPlan?    @relation(fields: [plan_id], references: [id])
@@ -157,6 +158,7 @@ model TenantProduct {
   product_agents  ProductAgent[]
   sla_policies    SlaPolicy[]
   escalation_rules EscalationRule[]
+  tickets          Ticket[]
 
   @@map("tenant_products")
 }
@@ -259,9 +261,10 @@ model Ticket {
   created_at           DateTime     @default(now())
   updated_at           DateTime     @updatedAt
 
-  product  Product         @relation(fields: [product_id], references: [id])
-  tenant   Tenant?         @relation(fields: [tenant_id], references: [id])
-  comments TicketComment[]
+  product        Product         @relation(fields: [product_id], references: [id])
+  tenant         Tenant?         @relation(fields: [tenant_id], references: [id])
+  tenant_product TenantProduct? @relation(fields: [tenant_product_id], references: [id])
+  comments       TicketComment[]
 
   @@index([product_id, status, created_at])
   @@index([product_id, tenant_id, status])
@@ -478,6 +481,8 @@ model BillingPlan {
   overage_per_ticket_usd   Decimal  @default(0)
   features                 Json     @default("{}")
   is_active                Boolean  @default(true)
+  is_free_trial            Boolean  @default(false)
+  trial_days               Int      @default(0)
 
   tenants Tenant[]
 

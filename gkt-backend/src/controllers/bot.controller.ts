@@ -16,6 +16,8 @@ type BotSession = {
   user_email: string | null;
   exchanges: number;
   messages: SessionMessage[];
+  /** When true, next "yes" / "create ticket" creates a handoff ticket instead of ending as resolved */
+  pendingHandoffOffer?: boolean;
 };
 
 const sessions = new Map<string, BotSession>();
@@ -99,6 +101,33 @@ function classifyPriority(text: string): 'p1' | 'p2' | 'p3' | 'p4' {
 function isYes(text: string): boolean {
   const t = text.trim().toLowerCase();
   return t === 'yes' || t === 'y' || t === 'yeah' || t === 'yep' || t === 'resolved' || t === 'solved';
+}
+
+/** User accepting the "create a ticket?" offer (yes/ok/please/create ticket) */
+function acceptsHandoffOffer(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return (
+    t === 'yes' || t === 'y' || t === 'yeah' || t === 'yep' ||
+    t === 'ok' || t === 'okay' || t === 'please' || t === 'sure' ||
+    t === 'create ticket' || t === 'create a ticket' || t === 'raise a ticket' || t === 'raise ticket'
+  );
+}
+
+/** User signals issue not resolved or wants to escalate (dissatisfaction / still need help) */
+function looksLikeNotResolvedOrDissatisfied(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("didn't work") || t.includes('did not work') ||
+    t.includes('not working') || t.includes("doesn't work") || t.includes('does not work') ||
+    t.includes("won't work") || t.includes('still not') || t.includes('still having') ||
+    t.includes('still have the') || t.includes("that didn't help") || t.includes('not helpful') ||
+    t.includes('not resolved') || t.includes('no luck') || t.includes("didn't fix") ||
+    t.includes('not happy') || t.includes('not satisfied') ||
+    t.includes('need a ticket') || t.includes('raise a ticket') || t.includes('raise ticket') ||
+    t.includes('create a ticket') || (t.includes('create ticket') && !t.includes("don't")) ||
+    t.includes('connect me') || t.includes('transfer to agent') || t.includes('want to talk to agent') ||
+    (t === 'no' || t === 'nope') // "no" to "did that help?"
+  );
 }
 
 async function appendConversationMessage(args: {
@@ -276,6 +305,21 @@ async function createHandoffTicket(args: {
     },
   });
 
+  // Link the existing bot Conversation (L0 messages) to this ticket so widget + agent load full thread from Mongo
+  if (session.tenant_product_id && session.id) {
+    await Conversation.updateOne(
+      { tenant_product_id: session.tenant_product_id, session_id: session.id, type: 'bot' },
+      {
+        $set: {
+          ticket_id: ticket.id,
+          updated_at: new Date(),
+          'bot_session.handoff_ticket_id': ticket.id,
+          'bot_session.handoff_reason': 'handoff',
+        },
+      }
+    ).catch((e) => console.warn('createHandoffTicket: link Conversation to ticket failed', (e as Error).message));
+  }
+
   return { ticket_id: ticket.id, ticket_number: ticket.ticket_number };
 }
 
@@ -326,19 +370,27 @@ export async function welcomeMessage(req: Request, res: Response): Promise<void>
     const model = tp.l0_model || 'gpt-4o-mini';
 
     const system =
-      'You are writing the very first message for a support chat widget. Your reply will be shown as the bot\'s opening message. ' +
-      'Write in a friendly, concise way. Do not use markdown or code blocks.';
+      'You are writing ONLY the very first opening message for a support chat widget. Your reply will be shown as the bot\'s greeting. ' +
+      'The product team will render this text directly in the UI, so you MUST follow the exact output format and avoid extra prose.';
 
     const userPrompt = combined.trim()
       ? `Product/context: ${tp.name || 'Support'}\n\n` +
-        `Using the knowledge base content below, write a short welcome message (2–4 sentences) that:\n` +
-        `1. Says hi and asks how you can help today.\n` +
-        `2. Mentions 4–6 specific topics or problems that the knowledge base can help with (as a short bullet list).\n` +
-        `Keep the whole message under 250 words.\n\n` +
-        `Knowledge base content:\n\n${combined}`
+      `Using the knowledge base content below, write a welcome message that is STRICTLY a list of issues a user might face.\n` +
+      `OUTPUT FORMAT (must follow exactly):\n` +
+      `- First line: a very short greeting sentence (max 15 words).\n` +
+      `- Next lines: 5–8 bullet points, each starting with "• " and describing a type of issue or topic you can help with (e.g. "• Login or account access", "• Payments, billing & invoices").\n` +
+      `- Do NOT add any questions like "Did this solve it?" or instructions like "reply yes" etc.\n` +
+      `- Do NOT add any extra sentences before or after the bullet list.\n` +
+      `- Do NOT use numbered lists, markdown code blocks, or section headings.\n\n` +
+      `Knowledge base content (for inspiration only – do not copy verbatim):\n\n${combined}`
       : `Product/context: ${tp.name || 'Support'}\n\n` +
-        `Write a short, friendly welcome message (2–3 sentences) for a support chat widget. ` +
-        `Say hi, mention you are a support bot for "${tp.name || 'this product'}", and ask how you can help today.`;
+      `Write a welcome message for a support chat widget that is STRICTLY a list of issues a user might face.\n` +
+      `OUTPUT FORMAT (must follow exactly):\n` +
+      `- First line: a very short greeting sentence (max 15 words).\n` +
+      `- Next lines: 5–8 bullet points, each starting with "• " and describing a type of issue or topic you can help with (e.g. "• Login or account access", "• Payments, billing & invoices").\n` +
+      `- Do NOT add any questions like "Did this solve it?" or instructions like "reply yes" etc.\n` +
+      `- Do NOT add any extra sentences before or after the bullet list.\n` +
+      `- Do NOT use numbered lists, markdown code blocks, or section headings.`;
 
     const timeoutMs = 12000;
     const resp = await Promise.race([
@@ -414,7 +466,35 @@ export async function chat(req: Request, res: Response): Promise<void> {
     user_email,
   }).catch((e) => console.error('bot conversation append(user) error:', e));
 
-  // If user confirms resolved, end the session.
+  // User previously got "Would you like me to create a ticket?" and now accepts → create handoff
+  if (session.pendingHandoffOffer && acceptsHandoffOffer(message)) {
+    session.pendingHandoffOffer = false;
+    const lastUser = [...session.messages].reverse().find((m) => m.from === 'user')?.text || message;
+    const t = await createHandoffTicket({
+      tenant_id,
+      user_email,
+      subject: 'Support request (from chatbot)',
+      description: lastUser,
+      priority: classifyPriority(lastUser),
+      session,
+    });
+    const reply = `I've created a ticket for you. A support agent will follow up.\n\nTicket: ${t.ticket_number}`;
+    session.messages.push({ from: 'bot', text: reply, at: Date.now() });
+    appendConversationMessage({
+      tenant_id,
+      tenant_product_id,
+      session_id: sessionId,
+      from: 'bot',
+      text: reply,
+      meta: { handoff_reason: 'user_accepted_offer', handoff_ticket_id: t.ticket_id, turns_count: session.exchanges },
+    }).catch((e) => console.error('bot conversation append(bot handoff) error:', e));
+    sessions.delete(sessionId);
+    res.json({ reply, session_id: sessionId, handoff: t });
+    return;
+  }
+  session.pendingHandoffOffer = false; // clear on any other message
+
+  // If user confirms resolved (and we didn't just offer handoff), end the session.
   if (isYes(message)) {
     const replyYes = `Great — happy to help. If you need anything else, just message here anytime.`;
     session.messages.push({ from: 'bot', text: replyYes, at: Date.now() });
@@ -431,7 +511,27 @@ export async function chat(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  // L0 → L1 trigger: explicit human request
+  // User says issue not resolved / not happy → offer to create a ticket (don't create yet)
+  if (looksLikeNotResolvedOrDissatisfied(message)) {
+    const offerReply =
+      `I'm sorry that didn't resolve your issue.\n\n` +
+      `Would you like me to create a ticket so a support agent can help? Reply **yes** to create a ticket, or ask me something else.`;
+    session.messages.push({ from: 'bot', text: offerReply, at: Date.now() });
+    appendConversationMessage({
+      tenant_id,
+      tenant_product_id,
+      session_id: sessionId,
+      from: 'bot',
+      text: offerReply,
+      meta: { turns_count: session.exchanges },
+    }).catch((e) => console.error('bot conversation append(bot offer) error:', e));
+    session.exchanges += 1;
+    session.pendingHandoffOffer = true;
+    res.json({ reply: offerReply, session_id: sessionId });
+    return;
+  }
+
+  // L0 → L1 trigger: explicit human request (create ticket immediately)
   if (looksLikeHumanRequest(message)) {
     const t = await createHandoffTicket({
       tenant_id,
@@ -490,8 +590,6 @@ export async function chat(req: Request, res: Response): Promise<void> {
         model,
         productName: tp?.name,
       });
-
-      reply += `\n\nDid this solve it? Reply \"yes\" or tell me what didn’t work.`;
       appendConversationMessage({
         tenant_id,
         tenant_product_id,
@@ -502,9 +600,10 @@ export async function chat(req: Request, res: Response): Promise<void> {
       }).catch((e) => console.error('bot conversation append(bot) error:', e));
     } else {
       reply =
-        `I’m not fully sure based on the knowledge base.\n\n` +
-        `Can you share one more detail (exact error text / where you see it / what you expected)?\n` +
-        `If you prefer, reply \"human\" and I’ll raise a ticket.`;
+        // `I’m not fully sure based on the knowledge base.\n\n` +
+        `I couldn't find a clear answer in the knowledge base for that.\n\n` +
+        `You can share one more detail (exact error text / where you see it), or I can create a ticket so an agent can help. Reply **yes** to create a ticket.`;
+      session.pendingHandoffOffer = true;
       appendConversationMessage({
         tenant_id,
         tenant_product_id,
@@ -527,10 +626,10 @@ export async function chat(req: Request, res: Response): Promise<void> {
 
     reply = invalidKey
       ? `I’m online, but my AI key is not configured correctly, so I can’t search the knowledge base right now.\n\n` +
-        `An admin needs to set a valid OPENAI_API_KEY for the backend.\n\n` +
-        `Reply "human" and I’ll create a ticket instead.`
+      `An admin needs to set a valid OPENAI_API_KEY for the backend.\n\n` +
+      `Reply "human" and I’ll create a ticket instead.`
       : `I hit an issue looking up the knowledge base right now.\n\n` +
-        `Reply "human" and I’ll create a ticket, or try again in a moment.`;
+      `Reply "human" and I’ll create a ticket, or try again in a moment.`;
     appendConversationMessage({
       tenant_id,
       tenant_product_id,
@@ -543,32 +642,6 @@ export async function chat(req: Request, res: Response): Promise<void> {
 
   session.exchanges += 1;
   session.messages.push({ from: 'bot', text: reply, at: Date.now() });
-
-  // L0 → L1 trigger: bot unable to resolve within 3 exchanges
-  if (session.exchanges >= 3) {
-    const t = await createHandoffTicket({
-      tenant_id,
-      user_email,
-      subject: 'Support request (from chatbot)',
-      description: message,
-      priority: classifyPriority(message),
-      session,
-    });
-    const handoffReply =
-      `${reply}\n\n` +
-      `I’m going to bring in a human agent to make sure this gets resolved.\n\nTicket: ${t.ticket_number}`;
-    session.messages.push({ from: 'bot', text: handoffReply, at: Date.now() });
-    appendConversationMessage({
-      tenant_id,
-      tenant_product_id,
-      session_id: sessionId,
-      from: 'bot',
-      text: handoffReply,
-      meta: { handoff_reason: 'three_turns_no_resolution', handoff_ticket_id: t.ticket_id, turns_count: session.exchanges },
-    }).catch((e) => console.error('bot conversation append(bot auto handoff) error:', e));
-    res.json({ reply: handoffReply, session_id: sessionId, handoff: t });
-    return;
-  }
 
   res.json({ reply, session_id: sessionId });
 }
@@ -596,7 +669,7 @@ export async function handoff(req: Request, res: Response): Promise<void> {
     Conversation.updateOne(
       { tenant_product_id: session.tenant_product_id || '', session_id: session.id, type: 'bot' },
       { $set: { ticket_id: t.ticket_id, updated_at: new Date(), 'bot_session.handoff_ticket_id': t.ticket_id, 'bot_session.handoff_reason': 'manual_button' } }
-    ).catch(() => {});
+    ).catch(() => { });
     res.json({ message: 'handoff created', session_id: session.id, handoff: t });
   } catch (e) {
     console.error('handoff error:', e);

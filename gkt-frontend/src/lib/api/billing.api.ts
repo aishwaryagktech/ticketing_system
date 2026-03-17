@@ -3,6 +3,8 @@ import apiClient from './client';
 export const billingApi = {
   listPlans: () => apiClient.get('/api/billing/plans'),
   getSubscription: () => apiClient.get('/api/billing/subscription'),
+  activateFreeTrial: (planId: string) =>
+    apiClient.post('/api/billing/activate-trial', { plan_id: planId }),
   createOrder: (planId: string) =>
     apiClient.post('/api/billing/subscribe', { plan_id: planId }),
   verifyPayment: (data: {

@@ -61,6 +61,52 @@ export function decryptPII(encryptedPayload: string): string {
 }
 
 /**
+ * If the string is or starts with an encrypted PII payload (v1:... or v2:...), decrypts it for display.
+ * Handles full payload or "ENCRYPTED_PAYLOAD has joined the conversation." pattern.
+ */
+export function decryptForDisplay(str: string | null | undefined): string {
+  if (str == null || typeof str !== 'string') return str ?? '';
+  const trimmed = str.trim();
+  if (!trimmed) return str;
+  // Entire string is encrypted payload (vN:iv:tag:ciphertext)
+  if (/^v\d+:[a-fA-F0-9]+:[a-fA-F0-9]+:[a-fA-F0-9]+$/.test(trimmed)) {
+    try {
+      return decryptPII(trimmed);
+    } catch {
+      return str;
+    }
+  }
+  // Pattern "ENCRYPTED_PAYLOAD has joined the conversation."
+  const joinedMatch = trimmed.match(/^(.+?)\s+has joined the conversation\.?$/);
+  if (joinedMatch) {
+    const prefix = joinedMatch[1].trim();
+    if (/^v\d+:[a-fA-F0-9]+:[a-fA-F0-9]+:[a-fA-F0-9]+$/.test(prefix)) {
+      try {
+        const decrypted = decryptPII(prefix);
+        return `${decrypted} has joined the conversation.`;
+      } catch {
+        return str;
+      }
+    }
+  }
+  return str;
+}
+
+/**
+ * Decrypts for display and returns optional bold prefix (e.g. decrypted name in "X has joined the conversation.").
+ */
+export function decryptForDisplayWithBold(str: string | null | undefined): { text: string; boldPrefix?: string } {
+  const text = decryptForDisplay(str);
+  if (!text) return { text: text || '' };
+  const joinedMatch = text.match(/^(.+?)\s+has joined the conversation\.?$/);
+  if (joinedMatch) {
+    const prefix = joinedMatch[1].trim();
+    if (prefix) return { text, boldPrefix: prefix };
+  }
+  return { text };
+}
+
+/**
  * Hashes searchable fields like email addresses.
  * Uses HMAC-SHA256. This should NOT be rotated to keep searches working.
  */

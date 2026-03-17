@@ -9,6 +9,8 @@ export const ticketApi = {
   updateStatus: (id: string, status: string) => apiClient.patch(`/api/tickets/${id}/status`, { status }),
   submitCSAT: (id: string, score: number, comment?: string) => apiClient.patch(`/api/tickets/${id}/csat`, { score, comment }),
   getConversation: (id: string) => apiClient.get(`/api/tickets/${id}/conversation`),
+  getConversationSummary: (id: string) => apiClient.get<{ summary: string }>(`/api/tickets/${id}/conversation-summary`),
+  getAiSuggestions: (id: string) => apiClient.get<{ replies: string[] }>(`/api/tickets/${id}/ai-suggestions`),
   getEscalationHistory: (id: string) => apiClient.get(`/api/tickets/${id}/escalation-history`),
   addComment: (id: string, body: string, isInternal?: boolean) => apiClient.post(`/api/tickets/${id}/comments`, { body, is_internal: isInternal }),
 };

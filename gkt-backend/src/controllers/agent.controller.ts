@@ -87,10 +87,10 @@ export async function updateAgent(req: AuthRequest, res: Response): Promise<void
         role === 'tenant_admin'
           ? 'tenant_admin'
           : role === 'l2_agent'
-          ? 'l2_agent'
-          : role === 'l3_agent'
-          ? 'l3_agent'
-          : 'l1_agent';
+            ? 'l2_agent'
+            : role === 'l3_agent'
+              ? 'l3_agent'
+              : 'l1_agent';
     }
 
     const roleRecord = await prisma.userRole.upsert({
@@ -222,5 +222,81 @@ export async function myProducts(req: AuthRequest, res: Response): Promise<void>
   } catch (e) {
     console.error('myProducts error:', e);
     res.status(500).json({ error: 'Failed to load products' });
+  }
+}
+
+// GET /api/agents/me/dashboard-stats
+export async function getDashboardStats(req: AuthRequest, res: Response): Promise<void> {
+  const userId = req.user?.id;
+  const tenantId = req.user?.tenant_id;
+  if (!userId || !tenantId) {
+    res.status(403).json({ error: 'Tenant context required' });
+    return;
+  }
+
+  try {
+    const myTickets = await prisma.ticket.findMany({
+      where: {
+        tenant_id: tenantId,
+        OR: [
+          { assigned_to: userId },
+          { escalated_by: userId }
+        ]
+      },
+      select: {
+        id: true,
+        status: true,
+        priority: true,
+        sla_breached: true,
+        updated_at: true,
+      },
+    });
+
+    const totalAssigned = myTickets.length;
+    const openTickets = myTickets.filter(t => t.status !== 'resolved' && t.status !== 'closed').length;
+    const resolvedTickets = myTickets.filter(t => t.status === 'resolved' || t.status === 'closed').length;
+    const slaBreaches = myTickets.filter(t => t.sla_breached).length;
+
+    // Status distribution
+    const statusDistribution = myTickets.reduce((acc, t) => {
+      const s = String(t.status || 'open');
+      acc[s] = (acc[s] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Priority distribution
+    const priorityDistribution = myTickets.reduce((acc, t) => {
+      const p = String(t.priority || 'p3');
+      acc[p] = (acc[p] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    // Daily resolutions map
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const resolvedRecently = myTickets.filter(
+      (t) => (t.status === 'resolved' || t.status === 'closed') && new Date(t.updated_at) >= sevenDaysAgo
+    );
+
+    const dailyResolutions = resolvedRecently.reduce((acc, t) => {
+      const dateStr = new Date(t.updated_at).toISOString().split('T')[0];
+      acc[dateStr] = (acc[dateStr] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    res.json({
+      total_assigned: totalAssigned,
+      open_tickets: openTickets,
+      resolved_tickets: resolvedTickets,
+      sla_breaches: slaBreaches,
+      status_distribution: statusDistribution,
+      priority_distribution: priorityDistribution,
+      daily_resolutions: dailyResolutions,
+    });
+  } catch (e) {
+    console.error('getDashboardStats error:', e);
+    res.status(500).json({ error: 'Failed to fetch agent dashboard stats' });
   }
 }

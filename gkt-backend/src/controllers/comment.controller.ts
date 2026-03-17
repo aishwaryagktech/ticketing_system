@@ -100,12 +100,19 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
     }
 
     // Resolve agent display name once — used in both the Mongo mirror and socket emit.
+    // first_name / last_name are encrypted at rest; decrypt before building display name.
     let resolvedAuthorName: string | null = null;
     try {
       const agentUser = await prisma.user.findUnique({ where: { id: userId }, select: { first_name: true, last_name: true, email: true } });
       if (agentUser) {
-        const parts = [agentUser.first_name, agentUser.last_name].filter(Boolean).join(' ').trim();
-        resolvedAuthorName = parts || agentUser.email || null;
+        const fn = agentUser.first_name ? (() => { try { return decryptPII(agentUser.first_name!); } catch { return agentUser.first_name!; } })() : '';
+        const ln = agentUser.last_name ? (() => { try { return decryptPII(agentUser.last_name!); } catch { return agentUser.last_name!; } })() : '';
+        const parts = [fn, ln].filter(Boolean).join(' ').trim();
+        if (parts) {
+          resolvedAuthorName = parts;
+        } else if (agentUser.email) {
+          try { resolvedAuthorName = decryptPII(agentUser.email); } catch { resolvedAuthorName = agentUser.email; }
+        }
       }
     } catch { /* non-fatal */ }
 
@@ -127,38 +134,36 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
         if (ticket.source === 'web_form') {
           // For email tickets, mirror to type:'ticket' so the conversation
           // endpoint always reads from the same store that Gmail sync writes to.
-          if (is_internal !== true) {
-            const agentMsg = { ...messageDoc, message_id: comment.id };
-            const originalMsg = {
-              message_id: 'ticket-original',
-              author_type: 'user',
-              author_id: ticket.created_by || 'user',
-              author_name: 'Requester',
-              body: (ticket.description || ticket.subject || '').trim() || '—',
-              is_internal: false,
-              created_at: ticket.created_at,
-            };
-            await Conversation.updateOne(
-              {
+          const agentMsg = { ...messageDoc, message_id: comment.id };
+          const originalMsg = {
+            message_id: 'ticket-original',
+            author_type: 'user',
+            author_id: ticket.created_by || 'user',
+            author_name: 'Requester',
+            body: (ticket.description || ticket.subject || '').trim() || '—',
+            is_internal: false,
+            created_at: ticket.created_at,
+          };
+          await Conversation.updateOne(
+            {
+              tenant_product_id: ticket.tenant_product_id,
+              ticket_id: ticket.id,
+              type: 'ticket',
+            },
+            {
+              $setOnInsert: {
                 tenant_product_id: ticket.tenant_product_id,
+                tenant_id: ticket.tenant_id ?? null,
                 ticket_id: ticket.id,
                 type: 'ticket',
+                created_at: new Date(),
+                messages: [originalMsg],
               },
-              {
-                $setOnInsert: {
-                  tenant_product_id: ticket.tenant_product_id,
-                  tenant_id: ticket.tenant_id ?? null,
-                  ticket_id: ticket.id,
-                  type: 'ticket',
-                  created_at: new Date(),
-                  messages: [originalMsg],
-                },
-                $set: { updated_at: new Date() },
-                $push: { messages: agentMsg },
-              },
-              { upsert: true, strict: false },
-            );
-          }
+              $set: { updated_at: new Date() },
+              $push: { messages: agentMsg },
+            },
+            { upsert: true, strict: false },
+          );
         } else {
           // For bot_handoff / widget / other sources, mirror to type:'bot'.
           await Conversation.updateOne(
@@ -216,13 +221,24 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
       const useGmail = Boolean(gmailSyncAccount);
 
       try {
+        // created_by may be encrypted-at-rest depending on how the ticket was created/stored.
+        // Always try to decrypt before sending an outbound email.
+        let recipientEmail = String(ticket.created_by || '').trim();
+        try {
+          recipientEmail = decryptPII(recipientEmail).trim();
+        } catch {
+          // keep as-is
+        }
+
         let agentName: string | null = null;
         try {
           const agentUser = await prisma.user.findUnique({
             where: { id: userId },
             select: { first_name: true, last_name: true },
           });
-          const fullName = [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(' ').trim();
+          const fn = agentUser?.first_name ? (() => { try { return decryptPII(agentUser.first_name); } catch { return agentUser.first_name; } })() : '';
+          const ln = agentUser?.last_name ? (() => { try { return decryptPII(agentUser.last_name); } catch { return agentUser.last_name; } })() : '';
+          const fullName = [fn, ln].filter(Boolean).join(' ').trim();
           agentName = fullName || null;
         } catch {
           // ignore
@@ -245,7 +261,7 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
 
           const sent = await sendGmailMessage({
             authedEmail: gmailSyncAccount,
-            to: ticket.created_by,
+            to: recipientEmail,
             subject,
             body: body.trim(),
             fromName: agentName || 'Support',
@@ -279,7 +295,7 @@ export async function createComment(req: AuthRequest, res: Response): Promise<vo
         } else {
           // Fallback: SendGrid
           await sendEmail({
-            to: ticket.created_by,
+            to: recipientEmail,
             subject,
             text: body.trim(),
             replyTo: env.SENDGRID_FROM_EMAIL || undefined,

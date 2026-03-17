@@ -3,6 +3,7 @@ import { prisma } from '../db/postgres';
 import { ApiKeyRequest } from '../middleware/apiKey';
 import { AuthRequest } from '../middleware/auth';
 import { getActiveAdapter } from '../ai/provider';
+import { OpenAIAdapter } from '../ai/adapters/openai';
 import { Conversation } from '../../mongo/models/conversation.model';
 import {
   getResolutionTimeMins,
@@ -11,8 +12,11 @@ import {
   markBreachedTickets,
 } from '../services/sla.service';
 import { env } from '../config/env';
-import { decryptPII } from '../utils/encrypt';
+import { decryptPII, decryptForDisplay } from '../utils/encrypt';
+import { parseTranscriptFromDescription } from '../utils/transcript';
 import { getIO } from '../config/socket';
+import { embedQuery, searchKb } from '../services/embedding.service';
+import { EscalationService } from '../services/escalation.service';
 
 // GET /api/tickets
 export async function listTickets(req: AuthRequest, res: Response): Promise<void> {
@@ -41,6 +45,7 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
   try {
     // Keep sla_breached in sync so list views and stats are accurate
     await markBreachedTickets();
+    await EscalationService.evaluateAutoEscalation();
     const where: any = {
       tenant_id: tenantId,
       ...(tenant_product_id ? { tenant_product_id } : {}),
@@ -50,7 +55,12 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
       ...(sla_breached !== undefined ? { sla_breached } : {}),
     };
 
-    if (assigned === 'me') where.assigned_to = userId;
+    if (assigned === 'me') {
+      where.OR = [
+        { assigned_to: userId },
+        { escalated_by: userId }
+      ];
+    }
     if (assigned === 'unassigned') where.assigned_to = null;
 
     const tickets = await prisma.ticket.findMany({
@@ -72,15 +82,23 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
         sla_breached: true,
         created_at: true,
         updated_at: true,
+        tenant_product: {
+          select: {
+            name: true,
+          },
+        },
       },
     });
 
-    const escalatedByIds = [...new Set(tickets.map((t: any) => t.escalated_by).filter(Boolean))] as string[];
-    let escalatedByNames: Record<string, string> = {};
-    if (escalatedByIds.length > 0) {
+    const userIds = [...new Set([
+      ...tickets.map((t: any) => t.escalated_by).filter(Boolean),
+      ...tickets.map((t: any) => t.assigned_to).filter(Boolean)
+    ])] as string[];
+    let userNames: Record<string, string> = {};
+    if (userIds.length > 0) {
       try {
         const users = await prisma.user.findMany({
-          where: { id: { in: escalatedByIds } },
+          where: { id: { in: userIds } },
           select: { id: true, first_name: true, last_name: true, email: true },
         });
         for (const u of users) {
@@ -100,15 +118,15 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
             }
           }
           if (parts.length) {
-            escalatedByNames[u.id] = parts.join(' ').trim();
+            userNames[u.id] = parts.join(' ').trim();
           } else if (u.email) {
             try {
-              escalatedByNames[u.id] = decryptPII(u.email);
+              userNames[u.id] = decryptPII(u.email);
             } catch {
-              escalatedByNames[u.id] = u.email;
+              userNames[u.id] = u.email;
             }
           } else {
-            escalatedByNames[u.id] = u.id;
+            userNames[u.id] = u.id;
           }
         }
       } catch {
@@ -116,10 +134,12 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
       }
     }
 
-    const items = tickets.map((t: any) => ({
+    const items = await Promise.all(tickets.map(async (t: any) => ({
       ...t,
-      escalated_by_name: t.escalated_by ? escalatedByNames[t.escalated_by] ?? null : null,
-    }));
+      escalated_by_name: t.escalated_by ? userNames[t.escalated_by] ?? null : null,
+      assigned_to_name: t.assigned_to ? userNames[t.assigned_to] ?? null : null,
+      next_escalation_at: await EscalationService.getNextEscalationDue(t.id),
+    })));
 
     res.json({ items, take, skip });
   } catch (e) {
@@ -137,6 +157,7 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
     return;
   }
   try {
+    await EscalationService.evaluateAutoEscalation();
     let ticket = await prisma.ticket.findFirst({
       where: { id, tenant_id: tenantId },
       include: {
@@ -145,6 +166,11 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
           select: {
             email_sender_address: true,
             email_sender_name: true,
+          },
+        },
+        tenant_product: {
+          select: {
+            name: true,
           },
         },
       },
@@ -210,10 +236,13 @@ export async function getTicket(req: AuthRequest, res: Response): Promise<void> 
         // ignore
       }
     }
+    const next_escalation_at = await EscalationService.getNextEscalationDue(ticket.id);
+
     res.json({
       ...ticket,
       agent_email: agentEmailResolved,
       escalated_by_name: escalatedByName,
+      next_escalation_at,
     });
   } catch (e) {
     console.error('getTicket error:', e);
@@ -460,14 +489,19 @@ export async function updateTicket(req: AuthRequest, res: Response): Promise<voi
     }
 
     const data: any = { ...allowed };
-    if (typeof allowed.assigned_to === 'string' && allowed.assigned_to !== userId) {
+
+    // If level is increasing OR reassigned to another agent/queue, track who did it
+    const levelIncreasing = typeof allowed.escalation_level === 'number' && allowed.escalation_level > (t.escalation_level ?? 0);
+    const reassignedAway = (typeof allowed.assigned_to === 'string' && allowed.assigned_to !== userId) ||
+      (allowed.assigned_to === null && t.assigned_to === userId);
+
+    if (levelIncreasing || reassignedAway) {
       data.escalated_by = userId;
-      // Reset to 'open' so the new agent must click Start — this also triggers the
-      // correct showStartInsteadOfReply UI and delays the WebSocket connection.
-      if (!allowed.status) data.status = 'open';
-    }
-    if (allowed.assigned_to === null) {
-      data.escalated_by = null;
+
+      // If reassigned to another specific agent, ensure status is 'open' for them to 'start'
+      if (typeof allowed.assigned_to === 'string' && allowed.assigned_to !== userId && !allowed.status) {
+        data.status = 'open';
+      }
     }
 
     // If priority is changing, recompute SLA deadline based on new priority
@@ -718,9 +752,19 @@ export async function updateStatus(req: AuthRequest, res: Response): Promise<voi
         const agent = await prisma.user.findUnique({ where: { id: userId }, select: { first_name: true, last_name: true, email: true } });
         let agentName: string | null = null;
         if (agent) {
-          const parts = [agent.first_name, agent.last_name].filter(Boolean).join(' ').trim();
-          if (parts) agentName = parts;
-          else { try { agentName = decryptPII(agent.email || ''); } catch { agentName = agent.email || null; } }
+          try {
+            const fn = agent.first_name ? decryptPII(agent.first_name) : '';
+            const ln = agent.last_name ? decryptPII(agent.last_name) : '';
+            const parts = [fn, ln].filter(Boolean).join(' ').trim();
+            if (parts) agentName = parts;
+            else agentName = agent.email ? decryptPII(agent.email) : null;
+          } catch {
+            const fn = agent.first_name ?? '';
+            const ln = agent.last_name ?? '';
+            const parts = [fn, ln].filter(Boolean).join(' ').trim();
+            if (parts) agentName = parts;
+            else agentName = agent.email ?? null;
+          }
         }
         getIO().to(`ticket:${id}`).emit('ticket:agent_started', {
           ticket_id: id,
@@ -744,6 +788,32 @@ export async function updateStatus(req: AuthRequest, res: Response): Promise<voi
         }
       } catch (socketErr) {
         console.warn('updateStatus: failed to emit ticket:agent_started (continuing):', (socketErr as Error).message);
+      }
+    }
+
+    // When resolved or closed: add thank-you / end-of-conversation message, then notify so socket can close
+    if (status === 'resolved' || status === 'closed') {
+      try {
+        const tpId = (t as any).tenant_product_id;
+        if (tpId) {
+          const convType = (t as any).source === 'web_form' ? 'ticket' : 'bot';
+          const thankYouBody = 'Thank you for contacting us. This conversation is now closed.';
+          await Conversation.updateOne(
+            { tenant_product_id: tpId, ticket_id: id, type: convType },
+            {
+              $setOnInsert: { tenant_product_id: tpId, tenant_id: tenantId, ticket_id: id, type: convType, created_at: new Date() },
+              $set: { updated_at: new Date() },
+              $push: { messages: { message_id: `sys-closed-${Date.now()}`, author_type: 'system', author_name: 'System', body: thankYouBody, is_internal: false, created_at: new Date() } },
+            },
+            { upsert: true, strict: false },
+          ).catch((e: Error) => console.warn('updateStatus: failed to save closed message:', e.message));
+        }
+        getIO().to(`ticket:${id}`).emit('ticket:closed', {
+          ticket_id: id,
+          closed_message: thankYouBody,
+        });
+      } catch (err) {
+        console.warn('updateStatus: failed to emit ticket:closed or save thank-you message:', (err as Error).message);
       }
     }
 
@@ -783,9 +853,7 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
       return;
     }
 
-    // For bot/widget sources: prefer the Mongo bot conversation thread.
-    // web_form tickets go directly to the email thread path below so that
-    // Gmail-synced messages (stored in type:'ticket') are always surfaced.
+    // Bot handoff: one Conversation doc holds full thread (L0 + agent + user). Return all messages for UI.
     if (ticket.source !== 'web_form' && ticket.tenant_product_id) {
       try {
         const convo = await Conversation.findOne(
@@ -796,8 +864,9 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
             .map((m: any) => ({
               id: m.message_id,
               from: m.author_type === 'system' ? 'system' : m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
-              author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
-              text: m.body,
+              author_name: m.author_name && m.author_type === 'agent' ? decryptForDisplay(m.author_name) : undefined,
+              text: decryptForDisplay(m.body),
+              is_internal: m.is_internal || false,
               created_at: m.created_at ? new Date(m.created_at) : new Date(),
             }))
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -814,16 +883,17 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
     if (ticket.source === 'web_form') {
       const emailConvo = ticket.tenant_product_id
         ? await Conversation.findOne(
-            { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'ticket' },
-          ).lean()
+          { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'ticket' },
+        ).lean()
         : null;
       if (emailConvo && Array.isArray(emailConvo.messages) && emailConvo.messages.length > 0) {
         const sorted = (emailConvo.messages as any[])
           .map((m: any) => ({
             id: m.message_id,
             from: m.author_type === 'system' ? 'system' : m.author_type === 'agent' ? 'agent' : 'user',
-            author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
-            text: m.body,
+            author_name: m.author_name && m.author_type === 'agent' ? decryptForDisplay(m.author_name) : undefined,
+            text: decryptForDisplay(m.body),
+            is_internal: m.is_internal || false,
             created_at: m.created_at ? new Date(m.created_at) : new Date(),
           }))
           .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
@@ -831,15 +901,15 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
         const msgs = originalFirst
           ? sorted
           : [
-              { id: 'ticket-original', from: 'user' as const, text: (ticket.description || ticket.subject || '').trim() || '—', created_at: ticket.created_at },
-              ...sorted,
-            ];
+            { id: 'ticket-original', from: 'user' as const, text: (ticket.description || ticket.subject || '').trim() || '—', created_at: ticket.created_at },
+            ...sorted,
+          ];
         res.json({ messages: msgs });
         return;
       }
 
       const comments = await prisma.ticketComment.findMany({
-        where: { ticket_id: ticket.id, is_internal: false },
+        where: { ticket_id: ticket.id },
         orderBy: { created_at: 'asc' },
       });
 
@@ -854,6 +924,7 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
         id: c.id,
         from: (c.author_id || '').toLowerCase() === createdByLower ? ('user' as const) : ('agent' as const),
         text: c.body,
+        is_internal: c.is_internal || false,
         created_at: c.created_at,
       }));
       const msgs = [firstMsg, ...commentMsgs];
@@ -896,26 +967,163 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
       return;
     }
 
-    // For other sources, basic conversation from description only
-    let baseText = ticket.description || ticket.subject;
-    if (baseText) {
-      const marker = '\n---\nChat transcript\n---';
-      const idx = baseText.indexOf(marker);
-      if (idx >= 0) {
-        baseText = baseText.slice(0, idx).trim();
-      }
+    // For other sources (or when Mongo fails), parse transcript into conversation view or show full description
+    const description = (ticket.description || ticket.subject || '').trim() || '—';
+    const parsedTranscript = parseTranscriptFromDescription(ticket.description || '');
+
+    if (parsedTranscript.length > 0) {
+      const msgs = parsedTranscript.map((m, i) => ({
+        id: `transcript-${i}`,
+        from: m.from as 'user' | 'bot',
+        text: decryptForDisplay(m.text),
+        is_internal: false,
+        created_at: new Date(ticket.created_at.getTime() + i),
+      }));
+      res.json({ messages: msgs });
+    } else {
+      res.json({
+        messages: [
+          {
+            id: 'ticket-desc',
+            from: 'user' as const,
+            text: decryptForDisplay(description),
+            created_at: ticket.created_at,
+          },
+        ],
+      });
     }
-    const first = {
-      id: 'ticket-desc',
-      from: 'user' as const,
-      text: baseText || ticket.subject,
-      created_at: ticket.created_at,
-    };
-    res.json({ messages: [first] });
   } catch (e) {
     console.error('getTicketConversation error:', e);
     res.status(500).json({ error: 'Failed to load conversation' });
   }
+}
+
+// GET /api/tickets/:id/conversation-summary
+export async function getConversationSummary(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  const { id } = req.params;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant context required' });
+    return;
+  }
+
+  try {
+    const ticket = await prisma.ticket.findFirst({
+      where: { id, tenant_id: tenantId },
+      select: {
+        id: true,
+        product_id: true,
+        tenant_product_id: true,
+        source: true,
+        description: true,
+        subject: true,
+        created_at: true,
+        created_by: true,
+      },
+    });
+    if (!ticket) {
+      res.status(404).json({ error: 'Ticket not found' });
+      return;
+    }
+
+    const lines: string[] = [];
+    if (ticket.source !== 'web_form' && ticket.tenant_product_id) {
+      try {
+        const convo = await Conversation.findOne(
+          { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'bot' },
+        ).lean();
+        if (convo && Array.isArray(convo.messages) && convo.messages.length > 0) {
+          const msgs = (convo.messages as any[])
+            .map((m: any) => ({ from: m.author_type || 'user', text: m.body || '', created_at: m.created_at }))
+            .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+          msgs.forEach((m: any) => lines.push(`${m.from}: ${m.text}`));
+        }
+      } catch (e) {
+        console.warn('getConversationSummary: Mongo bot convo failed:', (e as Error).message);
+      }
+    }
+    if (lines.length === 0 && ticket.source === 'web_form') {
+      const emailConvo = ticket.tenant_product_id
+        ? await Conversation.findOne(
+          { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'ticket' },
+        ).lean()
+        : null;
+      if (emailConvo && Array.isArray(emailConvo.messages) && emailConvo.messages.length > 0) {
+        const sorted = (emailConvo.messages as any[])
+          .map((m: any) => ({ from: m.author_type || 'user', text: m.body || '', created_at: m.created_at }))
+          .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+        sorted.forEach((m: any) => lines.push(`${m.from}: ${m.text}`));
+      } else {
+        const comments = await prisma.ticketComment.findMany({
+          where: { ticket_id: ticket.id, is_internal: false },
+          orderBy: { created_at: 'asc' },
+          select: { body: true, author_id: true },
+        });
+        const createdByLower = (ticket.created_by || '').toString().toLowerCase();
+        lines.push(`user: ${(ticket.description || ticket.subject || '').trim() || '—'}`);
+        comments.forEach((c: any) => {
+          const from = (c.author_id || '').toString().toLowerCase() === createdByLower ? 'user' : 'agent';
+          lines.push(`${from}: ${c.body}`);
+        });
+      }
+    }
+    if (lines.length === 0) {
+      let base = ticket.description || ticket.subject || '';
+      const marker = '\n---\nChat transcript\n---';
+      const idx = base.indexOf(marker);
+      if (idx >= 0) base = base.slice(0, idx).trim();
+      lines.push(`user: ${base || ticket.subject || '—'}`);
+    }
+
+    const conversationText = lines.join('\n\n');
+    if (!conversationText.trim()) {
+      res.json({ summary: 'No conversation content yet.' });
+      return;
+    }
+
+    try {
+      const adapter = await getActiveAdapter(ticket.product_id);
+      const summary = await adapter.chat(
+        [
+          {
+            role: 'user',
+            content:
+              'Summarize this support conversation in 2–3 short sentences for an agent. Focus on what the customer asked and the current state. Be concise.\n\n' +
+              conversationText,
+          },
+        ],
+        '',
+      );
+      res.json({ summary: summary || 'Unable to generate summary.' });
+    } catch (aiErr) {
+      console.warn('getConversationSummary: AI failed:', (aiErr as Error).message);
+      res.status(200).json({ summary: '' });
+    }
+  } catch (e) {
+    console.error('getConversationSummary error:', e);
+    res.status(500).json({ error: 'Failed to generate conversation summary' });
+  }
+}
+
+/** Build 3 resourceful, agent-ready fallback suggestions when AI/KB is unavailable. */
+function buildFallbackSuggestions(ticket: any, history: Array<{ body: string; is_internal?: boolean }>): string[] {
+  const subject = String(ticket.subject || '').trim();
+  const description = String(ticket.description || '').trim().slice(0, 120);
+  const lastUserMsg = [...history].reverse().find((h) => !h.is_internal)?.body?.trim() || '';
+  const isGenericSubject =
+    !subject ||
+    /support request|from chatbot|ticket|help request/i.test(subject);
+  const topicHint = isGenericSubject
+    ? (lastUserMsg || description).slice(0, 80)
+    : subject;
+
+  return [
+    topicHint
+      ? `Thank you for reaching out${topicHint ? ` — "${topicHint.replace(/"/g, "'")}"` : ''}. I'm looking into this and will get back to you shortly.`
+      : 'Thank you for reaching out. I\'m looking into this and will get back to you shortly.',
+    'Could you share a bit more detail (or a screenshot) so I can give you a precise answer?',
+    'I\'ve noted this. If you see any error message, please paste it here—that will help us resolve this faster.',
+  ];
 }
 
 // GET /api/tickets/:id/ai-suggestions
@@ -941,13 +1149,106 @@ export async function suggestReplies(req: AuthRequest, res: Response): Promise<v
       return;
     }
 
+    let history: Array<{ body: string; is_internal?: boolean }> = (ticket.comments || []).map((c: any) => ({
+      body: c.body,
+      is_internal: c.is_internal ?? false,
+    }));
+
+    // Prefer Mongo conversation when available so AI has full thread context
+    if (ticket.tenant_product_id) {
+      try {
+        const convoType = ticket.source === 'web_form' ? 'ticket' : 'bot';
+        const convo = await Conversation.findOne(
+          { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: convoType },
+        ).lean();
+        if (convo && Array.isArray(convo.messages) && convo.messages.length > 0) {
+          const msgs = (convo.messages as any[])
+            .map((m: any) => ({ body: m.body, created_at: m.created_at }))
+            .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+          history = msgs.map((m: any) => ({ body: `${m.body}`, is_internal: false }));
+        }
+      } catch (e) {
+        console.warn('suggestReplies: Mongo convo fallback failed:', (e as Error).message);
+      }
+    }
+
+    let adapter: Awaited<ReturnType<typeof getActiveAdapter>>;
     try {
-      const adapter = await getActiveAdapter(ticket.product_id);
-      const replies = await adapter.suggestReply(ticket, ticket.comments || []);
+      adapter = await getActiveAdapter(ticket.product_id);
+    } catch (adapterErr) {
+      if (env.OPENAI_API_KEY) {
+        adapter = new OpenAIAdapter(env.OPENAI_API_KEY, 'gpt-4o-mini');
+      } else {
+        throw adapterErr;
+      }
+    }
+
+    try {
+      // Build query text from ticket subject + last user message for KB search
+      const queryText = [
+        ticket.subject || '',
+        ticket.description || '',
+        ...history.slice(-3).map((h: any) => h.body || ''),
+      ].filter(Boolean).join(' ').slice(0, 1000);
+
+      let kbContext = '';
+      try {
+        const queryEmbedding = await embedQuery(queryText);
+        const kbResults = await searchKb(queryEmbedding, {
+          limit: 6,
+          tenant_product_id: ticket.tenant_product_id || undefined,
+        });
+        if (kbResults.length > 0) {
+          kbContext = kbResults
+            .filter((r) => r.score > 0.35)
+            .map((r) => {
+              const title = String(r.payload.title || '');
+              const content = String(r.payload.content || r.payload.text || '');
+              return title ? `[${title}]\n${content}` : content;
+            })
+            .filter(Boolean)
+            .slice(0, 4)
+            .join('\n\n');
+        }
+      } catch (kbErr) {
+        console.warn('suggestReplies: KB search failed (continuing without KB):', (kbErr as Error).message);
+      }
+
+      // Fallback: if vector search returned no context, use published kb_articles
+      if (!kbContext && ticket.product_id) {
+        try {
+          const articles = await prisma.kbArticle.findMany({
+            where: {
+              product_id: ticket.product_id,
+              is_published: true,
+              ...(ticket.tenant_product_id ? { tenant_product_id: ticket.tenant_product_id } : {}),
+            },
+            orderBy: { updated_at: 'desc' },
+            take: 5,
+          });
+          if (articles.length > 0) {
+            kbContext = articles
+              .map((a) => {
+                const title = String(a.title || '').trim();
+                const body = String(a.body || '').trim();
+                const bodySlice = body.slice(0, 1800);
+                return title ? `[${title}]\n${bodySlice}` : bodySlice;
+              })
+              .filter(Boolean)
+              .join('\n\n---\n\n');
+          }
+        } catch (kbArticleErr) {
+          console.warn('suggestReplies: kbArticle fallback failed (continuing):', (kbArticleErr as Error).message);
+        }
+      }
+
+      const aiReplies = await adapter.suggestReply(ticket, history, kbContext || undefined);
+      // Always return something — if AI produced nothing, fall back to context-aware drafts
+      const replies = aiReplies && aiReplies.length > 0 ? aiReplies : buildFallbackSuggestions(ticket, history);
       res.json({ replies });
     } catch (aiErr) {
-      console.warn('suggestReplies: AI failed:', (aiErr as Error).message);
-      res.status(200).json({ replies: [] });
+      console.warn('suggestReplies: AI failed, using fallback suggestions:', (aiErr as Error).message);
+      res.status(200).json({ replies: buildFallbackSuggestions(ticket, history) });
     }
   } catch (e) {
     console.error('suggestReplies error:', e);

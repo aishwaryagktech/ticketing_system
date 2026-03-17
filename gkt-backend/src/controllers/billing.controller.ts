@@ -91,6 +91,26 @@ export async function verifyPayment(req: AuthRequest, res: Response): Promise<vo
   }
 }
 
+export async function activateFreeTrial(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  const { plan_id } = req.body;
+  if (!plan_id || typeof plan_id !== 'string') {
+    res.status(400).json({ error: 'plan_id required' });
+    return;
+  }
+  try {
+    const result = await BillingService.activateFreeTrial(tenantId, plan_id);
+    res.json({ message: 'Free trial activated', ...result });
+  } catch (e: any) {
+    console.error('activateFreeTrial error:', e);
+    res.status(400).json({ error: e?.message || 'Failed to activate free trial' });
+  }
+}
+
 export async function updateSubscription(req: AuthRequest, res: Response): Promise<void> {
   res.status(501).json({ message: 'Not implemented' });
 }

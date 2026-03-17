@@ -3,19 +3,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { useTheme } from 'next-themes';
 import { ticketApi } from '@/lib/api/ticket.api';
 import { onboardingApi } from '@/lib/api/onboarding.api';
 import { gmailApi } from '@/lib/api/gmail.api';
 import { useAuthStore } from '@/store/auth.store';
 import { connectSocket } from '@/lib/socket';
 import type { Socket } from 'socket.io-client';
+import confetti from 'canvas-confetti';
 
 type Ticket = any;
 type ConversationMessage = {
   id: string;
-  from: 'user' | 'bot' | 'agent';
+  from: 'user' | 'bot' | 'agent' | 'system';
   text: string;
   created_at?: string | Date;
+  author_name?: string | null;
+  is_internal?: boolean;
 };
 
 export default function AgentTicketDetailPage() {
@@ -23,6 +27,7 @@ export default function AgentTicketDetailPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, hydrate, token } = useAuthStore();
+  const { theme, setTheme } = useTheme();
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,25 +35,56 @@ export default function AgentTicketDetailPage() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [reply, setReply] = useState('');
+  const [internalNoteText, setInternalNoteText] = useState('');
   const [isInternal, setIsInternal] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTab] = useState<'conversation' | 'details' | 'sla' | 'escalations'>('conversation');
   const socketRef = useRef<Socket | null>(null);
   const socketJoinedRef = useRef(false);
-  const loadRef = useRef<() => Promise<void>>(async () => {});
+  const loadRef = useRef<() => Promise<void>>(async () => { });
+  const refetchSuggestionsRef = useRef<() => void>(() => { });
   const hasMarkedOpenRef = useRef(false);
   const [nextEscalationAgents, setNextEscalationAgents] = useState<Array<{ id: string; first_name?: string | null; last_name?: string | null; email?: string | null; role?: string | null }>>([]);
   const [nextEscalationLoading, setNextEscalationLoading] = useState(false);
   const [escalationHistory, setEscalationHistory] = useState<Array<{ from_level: number; to_level: number; trigger_reason: string; triggered_by_name: string | null; created_at: string }>>([]);
   const [escalationHistoryLoading, setEscalationHistoryLoading] = useState(false);
   const [escalatedTo, setEscalatedTo] = useState<string | null>(null);
+  const [conversationSummary, setConversationSummary] = useState<string | null>(null);
+  const [conversationSummaryLoading, setConversationSummaryLoading] = useState(false);
+  const [suggestedReplies, setSuggestedReplies] = useState<string[]>([]);
+  const [suggestedRepliesLoading, setSuggestedRepliesLoading] = useState(false);
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  const isDark = mounted && theme === 'dark';
+
+  const pageBg = isDark
+    ? 'linear-gradient(160deg,#020617 0%,#0a1628 40%,#020617 100%)'
+    : 'linear-gradient(160deg,#EFF6FF 0%,#DBEAFE 30%,#F0F9FF 65%,#E0F2FE 100%)';
+  const textPrimary = isDark ? '#E5E7EB' : '#0F172A';
+  const textSecondary = isDark ? '#94A3B8' : '#64748B';
+  const accentBlue = '#0EA5E9';
+  const accentIndigo = '#6366F1';
+  const cardBg = isDark ? 'rgba(15,23,42,0.95)' : 'rgba(255,255,255,0.96)';
+  const cardBorder = isDark ? 'rgba(148,163,184,0.28)' : 'rgba(147,197,253,0.8)';
+  const pillBg = isDark ? 'rgba(15,23,42,0.9)' : 'rgba(255,255,255,0.9)';
+  const pillBorder = isDark ? 'rgba(148,163,184,0.55)' : 'rgba(147,197,253,0.9)';
 
   const isReadOnly = (searchParams.get('readonly') || '').toLowerCase() === '1' || (searchParams.get('readonly') || '').toLowerCase() === 'true';
 
   const statusNorm = ticket ? String(ticket.status || 'new_ticket').toLowerCase().replace(/-/g, '_') : '';
-  const showStartInsteadOfReply = !isReadOnly && !escalatedTo && (statusNorm === 'new_ticket' || statusNorm === 'open');
-  const showReplyArea = !isReadOnly && !showStartInsteadOfReply && !escalatedTo;
+  const isAssignedToMe = ticket?.assigned_to === user?.id;
+  const isEscalatedByMe = ticket?.escalated_by === user?.id && !isAssignedToMe;
+
+  const showStartInsteadOfReply = !isReadOnly && !escalatedTo && !isEscalatedByMe && (statusNorm === 'new_ticket' || statusNorm === 'open');
+  const showReplyArea = !isReadOnly && !showStartInsteadOfReply && !escalatedTo && isAssignedToMe;
   const showResolvedComplete = !isReadOnly && (statusNorm === 'in_progress' || statusNorm === 'pending_user');
+  const isOpenState = statusNorm === 'new_ticket' || statusNorm === 'open';
+  const isClosedState = statusNorm === 'resolved' || statusNorm === 'closed';
+
+  const nextEscDeadline = (ticket as any)?.next_escalation_at;
+  const timeUntilEscalationMins = nextEscDeadline ? Math.max(0, Math.floor((new Date(nextEscDeadline).getTime() - Date.now()) / (60 * 1000))) : null;
 
   const canEscalateTo2 = user?.role === 'l1_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
   const canEscalateTo3 = user?.role === 'l2_agent' || user?.role === 'tenant_admin' || user?.role === 'super_admin';
@@ -61,6 +97,23 @@ export default function AgentTicketDetailPage() {
     if (r === 'l3_agent') return { role: 'tenant_admin' as const, label: 'Admin' };
     return null;
   }, [user?.role]);
+
+  const deriveRequesterName = (createdBy: unknown): string => {
+    const raw = (typeof createdBy === 'string' ? createdBy : String(createdBy || '')).trim();
+    if (!raw) return 'there';
+    if (!raw.includes('@')) {
+      const cleaned = raw.replace(/\s+/g, ' ').trim();
+      return cleaned || 'there';
+    }
+    const localPart = raw.split('@')[0] || '';
+    const cleanedLocal = localPart.replace(/[._-]+/g, ' ').trim();
+    if (!cleanedLocal) return 'there';
+    return cleanedLocal
+      .split(' ')
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  };
 
   useEffect(() => {
     if (!nextEscalationRole) {
@@ -79,11 +132,11 @@ export default function AgentTicketDetailPage() {
           nextEscalationRole.role === 'tenant_admin'
             ? arr.filter((a: any) => a.role === 'tenant_admin')
             : arr.filter(
-                (a: any) =>
-                  a.role === nextEscalationRole.role &&
-                  Array.isArray(a.assigned_products) &&
-                  (tpId && a.assigned_products.some((p: any) => p && p.id === tpId))
-              );
+              (a: any) =>
+                a.role === nextEscalationRole.role &&
+                Array.isArray(a.assigned_products) &&
+                (tpId && a.assigned_products.some((p: any) => p && p.id === tpId))
+            );
         setNextEscalationAgents(filtered);
       })
       .catch(() => {
@@ -125,12 +178,15 @@ export default function AgentTicketDetailPage() {
       setMessages(
         conv.map((m: any) => ({
           id: String(m.id),
-          from: (m.from === 'bot' || m.from === 'user' || m.from === 'agent' ? m.from : 'agent') as
+          from: (m.from === 'bot' || m.from === 'user' || m.from === 'agent' || m.from === 'system' ? m.from : 'agent') as
             | 'user'
             | 'bot'
-            | 'agent',
+            | 'agent'
+            | 'system',
           text: String(m.text || ''),
+          is_internal: m.is_internal || false,
           created_at: m.created_at,
+          author_name: m.author_name ?? null,
         })),
       );
     } catch (e: any) {
@@ -165,8 +221,76 @@ export default function AgentTicketDetailPage() {
   useEffect(() => {
     load();
     hasMarkedOpenRef.current = false;
+    setConversationSummary(null);
+    setSuggestedReplies([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Always fetch conversation summary when ticket is loaded (show for all statuses)
+  useEffect(() => {
+    if (!id || !ticket || loading) return;
+    let cancelled = false;
+    setConversationSummaryLoading(true);
+    ticketApi
+      .getConversationSummary(id)
+      .then((res) => {
+        if (!cancelled && res.data?.summary) setConversationSummary(res.data.summary);
+      })
+      .catch(() => {
+        if (!cancelled) setConversationSummary(null);
+      })
+      .finally(() => {
+        if (!cancelled) setConversationSummaryLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, ticket?.id, loading, messages.length]);
+
+  // Fetch AI suggested replies when ticket page is open and after each conversation update (e.g. chatbot response)
+  const refetchSuggestions = () => {
+    if (!id) return;
+    setSuggestedRepliesLoading(true);
+    ticketApi
+      .getAiSuggestions(id)
+      .then((res) => {
+        if (Array.isArray(res.data?.replies)) setSuggestedReplies(res.data.replies);
+        else setSuggestedReplies([]);
+      })
+      .catch(() => setSuggestedReplies([]))
+      .finally(() => setSuggestedRepliesLoading(false));
+  };
+  refetchSuggestionsRef.current = refetchSuggestions;
+
+  useEffect(() => {
+    if (!id || !ticket || loading) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchSuggestions = () => {
+      setSuggestedRepliesLoading(true);
+      ticketApi
+        .getAiSuggestions(id)
+        .then((res) => {
+          if (cancelled) return;
+          const replies = Array.isArray(res.data?.replies) ? res.data.replies : [];
+          if (replies.length > 0) {
+            setSuggestedReplies(replies);
+          } else {
+            // Retry once after 3 s if we got an empty list
+            retryTimer = setTimeout(() => {
+              if (cancelled) return;
+              ticketApi.getAiSuggestions(id)
+                .then((r2) => { if (!cancelled) setSuggestedReplies(Array.isArray(r2.data?.replies) ? r2.data.replies : []); })
+                .catch(() => { if (!cancelled) setSuggestedReplies([]); });
+            }, 3000);
+          }
+        })
+        .catch(() => { if (!cancelled) setSuggestedReplies([]); })
+        .finally(() => { if (!cancelled) setSuggestedRepliesLoading(false); });
+    };
+
+    fetchSuggestions();
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [id, ticket?.id, loading, messages.length]);
 
   // When agent opens the ticket and it's still new, mark as "open" so status counts are correct
   useEffect(() => {
@@ -177,7 +301,7 @@ export default function AgentTicketDetailPage() {
       ticketApi
         .updateStatus(id, 'open')
         .then(() => load())
-        .catch(() => {});
+        .catch(() => { });
     }
   }, [ticket?.id, ticket?.status, loading, isReadOnly, id]);
 
@@ -193,10 +317,11 @@ export default function AgentTicketDetailPage() {
     const isActive = activeStatuses.includes(statusNorm) && !escalatedTo;
 
     if (!isActive || isReadOnly || !token || !id) {
-      // Leave room if we were previously joined
+      // Leave room if we were previously joined (e.g. ticket resolved/closed or escalated)
       if (socketJoinedRef.current && socketRef.current) {
         socketRef.current.emit('leave:ticket', id);
         socketRef.current.off('ticket:message');
+        socketRef.current.off('ticket:closed');
         socketJoinedRef.current = false;
       }
       return;
@@ -212,17 +337,26 @@ export default function AgentTicketDetailPage() {
 
     sock.on('ticket:message', (data: any) => {
       const from = String(data.from || '');
-      // Reload conversation for external messages (user/bot).
-      // Agent's own replies are already refreshed by addComment → load().
-      if (from === 'user' || from === 'bot') {
-        loadRef.current();
+      // Reload conversation for external messages (user/bot) or internal notes from other sessions
+      if (from === 'user' || from === 'bot' || from === 'agent_internal') {
+        loadRef.current().then(() => {
+          if (from === 'user' || from === 'bot') {
+            refetchSuggestionsRef.current();
+          }
+        });
       }
+    });
+
+    sock.on('ticket:closed', () => {
+      // Thank-you message was added and conversation closed; refresh to show it and leave room
+      loadRef.current();
     });
 
     return () => {
       if (socketRef.current && socketJoinedRef.current) {
         socketRef.current.emit('leave:ticket', id);
         socketRef.current.off('ticket:message');
+        socketRef.current.off('ticket:closed');
         socketJoinedRef.current = false;
       }
     };
@@ -264,12 +398,31 @@ export default function AgentTicketDetailPage() {
     }
   };
 
+  const addInternalNote = async () => {
+    if (isReadOnly) return;
+    const text = internalNoteText.trim();
+    if (!text) return;
+    setSaving(true);
+    setError('');
+    try {
+      await ticketApi.addComment(id, text, true);
+      setInternalNoteText('');
+      await load();
+    } catch (e: any) {
+      setError(e?.message || 'Failed to add internal note');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const assignToMe = async () => {
     if (isReadOnly) return;
     setSaving(true);
     setError('');
     try {
       await ticketApi.assign(id, user?.id || '');
+      // Also transition to in_progress to trigger WebSocket connection
+      await ticketApi.updateStatus(id, 'in_progress');
       await load();
     } catch (e: any) {
       setError(e?.message || 'Failed to assign');
@@ -284,6 +437,14 @@ export default function AgentTicketDetailPage() {
     setError('');
     try {
       await ticketApi.updateStatus(id, status);
+      if (status === 'resolved' || status === 'closed') {
+        confetti({
+          particleCount: 150,
+          spread: 70,
+          origin: { y: 0.6 },
+          colors: ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#a855f7']
+        });
+      }
       await load();
     } catch (e: any) {
       setError(e?.message || 'Failed to update status');
@@ -293,7 +454,7 @@ export default function AgentTicketDetailPage() {
   };
 
   const refreshEscalationHistory = () => {
-    ticketApi.getEscalationHistory(id).then((r: any) => setEscalationHistory(Array.isArray(r?.data?.items) ? r.data.items : [])).catch(() => {});
+    ticketApi.getEscalationHistory(id).then((r: any) => setEscalationHistory(Array.isArray(r?.data?.items) ? r.data.items : [])).catch(() => { });
   };
 
   const escalate = async (level: number) => {
@@ -351,27 +512,71 @@ export default function AgentTicketDetailPage() {
 
   const sla = useMemo(() => {
     const deadline = ticket?.sla_deadline ? new Date(ticket.sla_deadline) : null;
-    if (!deadline) return { label: 'No SLA', color: '#94A3B8', msLeft: null as number | null, timeText: 'No SLA deadline set' };
-    const msLeft = deadline.getTime() - Date.now();
+    const createdAt = ticket?.created_at ? new Date(ticket.created_at) : null;
+
+    if (!deadline) return { label: 'No SLA', color: '#94A3B8', msLeft: null as number | null, timeText: 'No SLA deadline set', progress: 0 };
+
+    const now = Date.now();
+    const msLeft = deadline.getTime() - now;
+    const totalSlaMs = createdAt ? deadline.getTime() - createdAt.getTime() : 24 * 3600 * 1000;
+    const elapsedMs = createdAt ? now - createdAt.getTime() : 0;
+    const progress = totalSlaMs > 0 ? Math.min(100, Math.max(0, (elapsedMs / totalSlaMs) * 100)) : 0;
+
     const breached = ticket?.sla_breached || msLeft <= 0;
     if (breached) {
       const overdueMs = Math.abs(msLeft);
       const timeText = overdueMs < 60_000 ? 'Just breached' : `Breached (${formatMsOverdue(overdueMs)} ago)`;
-      return { label: 'Breached', color: '#FCA5A5', msLeft, timeText };
+      return { label: 'Breached', color: '#FCA5A5', msLeft, timeText, progress: 100 };
     }
-    if (msLeft <= 30 * 60 * 1000) return { label: 'Due soon', color: '#FACC15', msLeft, timeText: `Time left to solve: ${formatMs(msLeft)}` };
-    return { label: 'On track', color: '#4ADE80', msLeft, timeText: `Time left to solve: ${formatMs(msLeft)}` };
-  }, [ticket?.sla_deadline, ticket?.sla_breached]);
+    if (msLeft <= 30 * 60 * 1000) return { label: 'Due soon', color: '#FACC15', msLeft, timeText: `${formatMs(msLeft)} left`, progress };
+    return { label: 'On track', color: '#4ADE80', msLeft, timeText: `${formatMs(msLeft)} left`, progress };
+  }, [ticket?.sla_deadline, ticket?.sla_breached, ticket?.created_at]);
 
-  if (loading) {
-    return <div style={{ padding: 24, color: '#94A3B8' }}>Loading…</div>;
+  const hasFirstResponse = useMemo(() => {
+    return messages.some(m => m.from === 'agent');
+  }, [messages]);
+
+  const ticketAge = useMemo(() => {
+    if (!ticket?.created_at) return '—';
+    const diff = Date.now() - new Date(ticket.created_at).getTime();
+    return formatMs(diff);
+  }, [ticket?.created_at]);
+
+  if (!mounted || loading) {
+    return (
+      <div
+        style={{
+          color: textSecondary,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '60px 0',
+          fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,"Inter",sans-serif',
+        }}
+      >
+        Loading…
+      </div>
+    );
   }
 
   if (!ticket) {
     return (
-      <div style={{ padding: 24, color: '#E5E7EB' }}>
-        <div style={{ marginBottom: 10 }}>Ticket not found.</div>
-        <Link href="/agent/dashboard" style={{ color: '#FACC15' }}>Back to inbox</Link>
+      <div
+        style={{
+          color: textPrimary,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '60px 0',
+          fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,"Inter",sans-serif',
+        }}
+      >
+        <div style={{ padding: 24, borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg }}>
+          <div style={{ marginBottom: 10 }}>Ticket not found.</div>
+          <Link href="/agent/queue" style={{ color: accentBlue, fontWeight: 600 }}>
+            Back to queue
+          </Link>
+        </div>
       </div>
     );
   }
@@ -382,6 +587,12 @@ export default function AgentTicketDetailPage() {
     (isWebForm && (ticket.product?.email_sender_address as string | undefined)) ||
     (user?.email as string | undefined) ||
     '—';
+
+  const requesterName = deriveRequesterName(ticket.created_by);
+  const supportBrand =
+    (ticket.product && ((ticket.product as any).display_name || (ticket.product as any).name)) ||
+    ((ticket as any).tenant_name as string | undefined) ||
+    'Support';
 
   const priority = String(ticket.priority || 'p2').toLowerCase();
   const isP1 = priority === 'p1';
@@ -418,622 +629,547 @@ export default function AgentTicketDetailPage() {
   );
 
   return (
-    <div style={{ minHeight: '100vh', background: '#020617', color: '#E5E7EB', fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, \"Inter\", sans-serif' }}>
-      <div style={{ maxWidth: 1320, margin: '0 auto', padding: 16 }}>
-        {/* Top header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            gap: 12,
-            padding: '12px 14px',
-            borderRadius: 16,
-            border: '1px solid rgba(148,163,184,0.25)',
-            background: 'rgba(15,23,42,0.75)',
-            marginBottom: 12,
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: '#94A3B8' }}>
-              <Link href="/agent/dashboard" style={{ color: '#94A3B8', textDecoration: 'none' }}>
-                Inbox
-              </Link>{' '}
-              / {ticket.ticket_number}
-            </div>
-            <div style={{ fontSize: 18, fontWeight: 950, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {ticket.subject}
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-              {chip('Priority', String(ticket.priority || 'p2').toUpperCase(), 'rgba(250,204,21,0.18)', '#FACC15')}
-              {chip('Status', String(ticket.status || 'new_ticket'), 'rgba(148,163,184,0.12)', '#E5E7EB')}
-              {chip('Level', Number(ticket.escalation_level || 0) === 4 ? 'Admin' : `L${Number(ticket.escalation_level || 0)}`, 'rgba(59,130,246,0.14)', '#93C5FD')}
-              {(ticket as any).escalated_by_name && chip('Escalated', `by ${(ticket as any).escalated_by_name}`, 'rgba(59,130,246,0.2)', '#93C5FD')}
-              {chip('SLA', sla.label, 'rgba(148,163,184,0.12)', sla.color)}
-              {ticket.tenant_product_id ? chip('Product', String(ticket.tenant_product_id).slice(0, 8) + '…', 'rgba(148,163,184,0.12)', '#E5E7EB') : null}
-            </div>
-          </div>
+    <div style={{ color: textPrimary }}>
+      <div style={{ position: 'relative', zIndex: 1, width: '100%' }}>
 
+        {/* Mockup-style Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 22, fontWeight: 950, color: textPrimary, letterSpacing: '-0.02em' }}>
+            {ticket.ticket_number} — {ticket.subject}
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            {isAssignedToMe && !isReadOnly && (
+              <>
+                {nextEscalationRole && (
+                  <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <select
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        if (val === 'general') {
+                          escalate(nextEscalationRole.label === 'L2' ? 2 : nextEscalationRole.label === 'L3' ? 3 : 4);
+                        } else {
+                          escalateToAgent(nextEscalationRole.label === 'L2' ? 2 : nextEscalationRole.label === 'L3' ? 3 : 4, val);
+                        }
+                        e.target.value = ''; // Reset select
+                      }}
+                      disabled={saving || (nextEscalationLoading && nextEscalationAgents.length === 0)}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: 10,
+                        border: `1px solid ${cardBorder}`,
+                        background: isDark ? 'rgba(15,23,42,0.8)' : '#FFF',
+                        color: textPrimary,
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        fontWeight: 800,
+                        outline: 'none',
+                        appearance: 'none',
+                        paddingRight: '32px',
+                        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='${encodeURIComponent(textSecondary)}'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='C19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
+                        backgroundRepeat: 'no-repeat',
+                        backgroundPosition: 'right 10px center',
+                        backgroundSize: '16px',
+                      }}
+                    >
+
+                      <option value="general">Escalate to {nextEscalationRole.label} Queue</option>
+                      {nextEscalationAgents.length > 0 && (
+                        <optgroup label={`Available ${nextEscalationRole.label} Agents`}>
+                          {nextEscalationAgents.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.first_name || a.last_name ? [a.first_name, a.last_name].filter(Boolean).join(' ') : a.email}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                    {nextEscalationLoading && nextEscalationAgents.length === 0 && (
+                      <span style={{ fontSize: 10, color: textSecondary, position: 'absolute', bottom: -14, left: 4 }}>Loading agents...</span>
+                    )}
+                  </div>
+                )}
+
+
+                <button style={{ background: 'none', border: 'none', color: textSecondary, cursor: 'pointer', fontSize: 20 }}>⋮</button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Sub-header Metadata Row */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: textSecondary, fontWeight: 600 }}>{ticket.ticket_number}</span>
+            <span style={{ padding: '2px 8px', borderRadius: 6, background: 'rgba(59,130,246,0.15)', color: '#93C5FD', fontSize: 11, fontWeight: 800 }}>
+              {Number(ticket.escalation_level || 0) === 4 ? 'Admin' : `L${Number(ticket.escalation_level || 0)}`}
+            </span>
+            <span style={{ padding: '2px 8px', borderRadius: 6, background: 'rgba(234,179,8,0.15)', color: '#FACC15', fontSize: 11, fontWeight: 800 }}>
+              {String(ticket.priority || 'p2').toUpperCase()}
+            </span>
+            <span style={{ padding: '2px 8px', borderRadius: 6, background: 'rgba(148,163,184,0.12)', color: textPrimary, fontSize: 11, fontWeight: 800 }}>
+              {String(ticket.status || 'open').replace('_', ' ').charAt(0).toUpperCase() + String(ticket.status || 'open').replace('_', ' ').slice(1)}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: textSecondary, fontWeight: 600 }}>
+            Age: {ticketAge}
+          </div>
         </div>
 
         {error && (
-          <div style={{ padding: 10, borderRadius: 12, background: 'rgba(248,113,113,0.12)', color: '#FCA5A5', fontSize: 12, marginBottom: 12 }}>
+          <div
+            style={{
+              padding: 10,
+              borderRadius: 12,
+              background: 'rgba(248,113,113,0.12)',
+              color: '#B91C1C',
+              fontSize: 12,
+              marginBottom: 12,
+            }}
+          >
             {error}
           </div>
         )}
 
-        {/* Workspace grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: '260px minmax(0, 1fr) 340px', gap: 12 }}>
-          {/* Left rail */}
-          <div style={{ border: '1px solid rgba(148,163,184,0.25)', borderRadius: 16, background: 'rgba(15,23,42,0.65)', overflow: 'hidden' }}>
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,0.2)', color: '#94A3B8', fontSize: 11, fontWeight: 800 }}>
-              Workspace
-            </div>
-            <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <Link href="/agent/dashboard" style={{ textDecoration: 'none', color: '#E5E7EB', fontSize: 12, fontWeight: 800 }}>
-                ← Back to queue
-              </Link>
-              <div style={{ padding: 10, borderRadius: 14, border: '1px solid rgba(148,163,184,0.22)', background: 'rgba(2,6,23,0.55)' }}>
-                <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 6 }}>SLA</div>
-                <div style={{ fontSize: 13, fontWeight: 950, color: sla.color }}>{sla.label}</div>
-                {sla.timeText && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: '#E5E7EB' }}>
-                    {sla.timeText}
-                  </div>
-                )}
+        {/* Main 2-column Grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16 }}>
+          {/* Left Column Stack */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            {/* TICKET DETAILS Card */}
+            <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Ticket Details
               </div>
-
-              {!isReadOnly && (
-                <div style={{ padding: 10, borderRadius: 14, border: '1px solid rgba(148,163,184,0.22)', background: 'rgba(2,6,23,0.55)' }}>
-                  <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 6 }}>Quick actions</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    <button type="button" onClick={() => setStatus('pending_user')} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.25)', background: '#020617', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>
-                      Pending user
-                    </button>
-                    <button type="button" onClick={() => setStatus('resolved')} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.25)', background: '#020617', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>
-                      Resolve
-                    </button>
-                    <button type="button" onClick={() => setStatus('closed')} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid rgba(148,163,184,0.25)', background: '#020617', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>
-                      Close
-                    </button>
-                  </div>
-                  <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {canEscalateTo2 && nextEscalationRole?.label !== 'L2' && !escalatedTo && (
-                      <button type="button" onClick={() => escalate(2)} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: 'none', background: 'rgba(59,130,246,0.85)', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 950 }}>
-                        Escalate L2
-                      </button>
-                    )}
-                    {canEscalateTo3 && nextEscalationRole?.label !== 'L3' && !escalatedTo && (
-                      <button type="button" onClick={() => escalate(3)} disabled={saving} style={{ padding: '7px 10px', borderRadius: 999, border: 'none', background: 'rgba(168,85,247,0.85)', color: '#E5E7EB', cursor: 'pointer', fontSize: 12, fontWeight: 950 }}>
-                        Escalate L3
-                      </button>
-                    )}
-                  </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', rowGap: 12, alignItems: 'center', fontSize: 13 }}>
+                <div style={{ color: textSecondary }}>Product</div>
+                <div style={{ fontWeight: 700, color: textPrimary }}>
+                  {(ticket as any).tenant_product?.name || '—'}
                 </div>
-              )}
 
-              {nextEscalationRole && (
-                <div
-                  style={{
-                    padding: 10,
-                    borderRadius: 14,
-                    border: escalatedTo
-                      ? '1px solid rgba(59,130,246,0.45)'
-                      : '1px solid rgba(148,163,184,0.22)',
-                    background: escalatedTo ? 'rgba(30,64,175,0.15)' : 'rgba(2,6,23,0.55)',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
-                      Next escalation: {nextEscalationRole.label} — choose to escalate to:
+                <div style={{ color: textSecondary }}>Source</div>
+                <div>
+                  <span style={{ padding: '3px 10px', borderRadius: 999, background: 'rgba(59,130,246,0.1)', color: '#93C5FD', fontWeight: 700, fontSize: 11 }}>
+                    {ticket.source}
+                  </span>
+                </div>
+
+                <div style={{ color: textSecondary }}>Priority</div>
+                <div>
+                  <span style={{ padding: '3px 10px', borderRadius: 999, background: 'rgba(234,179,8,0.15)', color: '#FACC15', fontWeight: 700, fontSize: 11 }}>
+                    {String(ticket.priority || 'p2').toUpperCase()}
+                  </span>
+                </div>
+
+                <div style={{ color: textSecondary }}>Created</div>
+                <div style={{ fontWeight: 600, color: textPrimary }}>
+                  {ticket.created_at ? new Date(ticket.created_at).toLocaleString('en-US', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}
+                </div>
+
+                {nextEscalationRole && nextEscDeadline && (
+                  <>
+                    <div style={{ color: textSecondary }}>Escalation Due</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <div style={{ fontWeight: 700, color: timeUntilEscalationMins !== null && timeUntilEscalationMins < 30 ? '#F87171' : '#A855F7', fontSize: 13 }}>
+                        {new Date(nextEscDeadline).toLocaleString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                      <div style={{ fontSize: 10, color: textSecondary, fontWeight: 700, letterSpacing: '0.02em', textTransform: 'uppercase' }}>
+                        Auto-jumps to {nextEscalationRole.label} if not resolved
+                      </div>
                     </div>
-                    {escalatedTo && (
+                  </>
+                )}
+
+                <div style={{ color: textSecondary }}>Status</div>
+                <div>
+                  <select
+                    value={ticket.status}
+                    onChange={(e) => setStatus(e.target.value as any)}
+                    disabled={saving}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 10,
+                      border: `1px solid ${cardBorder}`,
+                      background: isDark ? 'rgba(15,23,42,0.8)' : '#FFF',
+                      color: textPrimary,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      outline: 'none',
+                    }}
+                  >
+                    <option value="open">Open</option>
+                    <option value="in_progress">In Progress</option>
+                    <option value="pending_user">Pending User</option>
+                    <option value="resolved">Resolved</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </div>
+
+                {/* AI Tags Section */}
+                {ticket.category && (
+                  <>
+                    <div style={{ color: textSecondary }}>AI Category</div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ padding: '3px 10px', borderRadius: 999, background: 'rgba(168,85,247,0.1)', color: '#D8B4FE', fontWeight: 700, fontSize: 11 }}>
+                        {ticket.category}
+                      </span>
+                      {ticket.sub_category && (
+                        <span style={{ padding: '3px 10px', borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)', color: textSecondary, fontWeight: 700, fontSize: 11 }}>
+                          {ticket.sub_category}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {ticket.department && (
+                  <>
+                    <div style={{ color: textSecondary }}>Department</div>
+                    <div>
+                      <span style={{ padding: '3px 10px', borderRadius: 999, background: 'rgba(16,185,129,0.1)', color: '#6EE7B7', fontWeight: 700, fontSize: 11 }}>
+                        {ticket.department}
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {ticket.sentiment && (
+                  <>
+                    <div style={{ color: textSecondary }}>Sentiment</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span
                         style={{
-                          fontSize: 10,
+                          padding: '3px 10px',
+                          borderRadius: 999,
+                          background: ticket.sentiment === 'critical' || ticket.sentiment === 'frustrated' ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)',
+                          color: ticket.sentiment === 'critical' || ticket.sentiment === 'frustrated' ? '#FCA5A5' : '#6EE7B7',
                           fontWeight: 700,
-                          padding: '2px 8px',
-                          borderRadius: 999,
-                          background: 'rgba(59,130,246,0.25)',
-                          color: '#93C5FD',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        ✓ Escalated
-                      </span>
-                    )}
-                  </div>
-                  {nextEscalationRole.role !== 'tenant_admin' && !ticket?.tenant_product_id ? (
-                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
-                      Link ticket to a product to see agents for this product.
-                    </div>
-                  ) : nextEscalationLoading ? (
-                    <div style={{ fontSize: 11, color: '#94A3B8' }}>Loading…</div>
-                  ) : nextEscalationAgents.length === 0 ? (
-                    <div style={{ fontSize: 11, color: '#94A3B8' }}>
-                      {nextEscalationRole.role === 'tenant_admin'
-                        ? 'No Admin users in this tenant.'
-                        : `No ${nextEscalationRole.label} agents assigned to this product.`}
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 6 }}>
-                      {nextEscalationAgents.map((a) => {
-                        const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
-                        const level = nextEscalationRole.role === 'l2_agent' ? 2 : nextEscalationRole.role === 'l3_agent' ? 3 : 4;
-                        return (
-                          <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: 12, color: '#E5E7EB' }}>{name}</span>
-                            {!isReadOnly && !escalatedTo && (
-                              <button
-                                type="button"
-                                onClick={() => escalateToAgent(level, a.id)}
-                                disabled={saving}
-                                style={{
-                                  padding: '6px 10px',
-                                  borderRadius: 999,
-                                  border: 'none',
-                                  background: nextEscalationRole.label === 'Admin' ? 'rgba(234,88,12,0.85)' : nextEscalationRole.label === 'L3' ? 'rgba(168,85,247,0.85)' : 'rgba(59,130,246,0.85)',
-                                  color: '#E5E7EB',
-                                  cursor: saving ? 'not-allowed' : 'pointer',
-                                  fontSize: 11,
-                                  fontWeight: 800,
-                                }}
-                              >
-                                {saving ? 'Escalating…' : `Escalate to ${name}`}
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Center panel */}
-          <div style={{ border: '1px solid rgba(148,163,184,0.25)', borderRadius: 16, background: 'rgba(15,23,42,0.65)', overflow: 'hidden', minWidth: 0 }}>
-            <div style={{ display: 'flex', gap: 6, padding: 10, borderBottom: '1px solid rgba(148,163,184,0.2)', flexWrap: 'wrap' }}>
-              {([
-                ['conversation', 'Conversation'],
-                ['details', 'Details'],
-                ['sla', 'SLA'],
-                ['escalations', 'Escalations'],
-              ] as const).map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setTab(k)}
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: 999,
-                    border: '1px solid rgba(148,163,184,0.25)',
-                    background: tab === k ? '#FACC15' : 'rgba(2,6,23,0.55)',
-                    color: tab === k ? '#0F172A' : '#E5E7EB',
-                    cursor: 'pointer',
-                    fontSize: 12,
-                    fontWeight: 900,
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {tab === 'conversation' && (
-            <>
-                {isWebForm && ticket.description && (
-                  <div
-                    style={{
-                      padding: 12,
-                      borderBottom: '1px solid rgba(148,163,184,0.25)',
-                      background: 'rgba(15,23,42,0.9)',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                      <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 800, marginBottom: 4 }}>
-                        Original request
-                      </div>
-                      <button
-                        type="button"
-                        onClick={refreshEmailThread}
-                        disabled={loading || saving}
-                        title="Refresh email thread"
-                        style={{
-                          padding: '6px 10px',
-                          borderRadius: 999,
-                          border: '1px solid rgba(148,163,184,0.25)',
-                          background: loading || saving ? 'rgba(30,41,59,0.5)' : 'rgba(2,6,23,0.55)',
-                          color: loading || saving ? '#64748B' : '#E5E7EB',
-                          cursor: loading || saving ? 'not-allowed' : 'pointer',
                           fontSize: 11,
-                          fontWeight: 900,
+                          textTransform: 'capitalize'
                         }}
                       >
-                        {loading ? 'Refreshing…' : 'Refresh'}
-                      </button>
+                        {ticket.sentiment}
+                      </span>
+                      {ticket.sentiment_trend && (
+                        <span style={{ fontSize: 11, color: textSecondary }}>
+                          Trend: <span style={{ color: ticket.sentiment_trend === 'worsening' ? '#FCA5A5' : '#6EE7B7', fontWeight: 700 }}>{ticket.sentiment_trend}</span>
+                        </span>
+                      )}
                     </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: '#E5E7EB',
-                        whiteSpace: 'pre-wrap',
-                      }}
-                    >
-                      {ticket.description}
-                    </div>
-                  </div>
+                  </>
                 )}
-                <div
-                  ref={scrollRef}
-                  style={{
-                    padding: 12,
-                    height: 480,
-                    overflowY: 'auto',
+
+                {ticket.ai_confidence !== null && (
+                  <>
+                    <div style={{ color: textSecondary }}>AI Confidence</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ flex: 1, height: 6, background: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)', borderRadius: 3, overflow: 'hidden' }}>
+                        <div style={{ width: `${(ticket.ai_confidence || 0) * 100}%`, height: '100%', background: (ticket.ai_confidence || 0) > 0.8 ? '#10B981' : '#F59E0B' }} />
+                      </div>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: textSecondary }}>{Math.round((ticket.ai_confidence || 0) * 100)}%</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* CONVERSATION / TRANSCRIPT Card */}
+            <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, display: 'flex', flexDirection: 'column' }}>
+              <div style={{ padding: '16px 16px 0 16px', fontSize: 13, fontWeight: 900, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
+                {isWebForm ? 'Email Thread' : 'Transcript'}
+              </div>
+
+              <div
+                ref={scrollRef}
+                style={{
+                  height: 450,
+                  overflowY: 'auto',
+                  padding: '0 16px 16px 16px',
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {messages
+                    .filter((m) => m.from !== 'system' && !m.is_internal)
+                    .map((m, idx) => {
+                      const isAgent = m.from === 'agent';
+                      const bubbleBg = isAgent
+                        ? (isDark ? 'rgba(250,204,21,0.15)' : '#FEF9C3')
+                        : (isDark ? 'rgba(30,41,59,0.5)' : '#F1F5F9');
+                      const bubbleBorder = isAgent
+                        ? (isDark ? 'rgba(250,204,21,0.3)' : '#FEF08A')
+                        : (isDark ? 'rgba(148,163,184,0.2)' : '#E2E8F0');
+
+                      return (
+                        <div
+                          key={m.id}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: isAgent ? 'flex-end' : 'flex-start',
+                            maxWidth: '85%',
+                            alignSelf: isAgent ? 'flex-end' : 'flex-start'
+                          }}
+                        >
+                          <div style={{
+                            fontSize: 10,
+                            fontWeight: 800,
+                            color: textSecondary,
+                            marginBottom: 4,
+                            display: 'flex',
+                            gap: 6,
+                            flexDirection: isAgent ? 'row-reverse' : 'row'
+                          }}>
+                            <span>{m.author_name || (isAgent ? 'Support' : 'Customer')}</span>
+                            <span style={{ opacity: 0.6 }}>{m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                          </div>
+                          <div style={{
+                            padding: '10px 14px',
+                            borderRadius: isAgent ? '18px 18px 2px 18px' : '18px 18px 18px 2px',
+                            background: bubbleBg,
+                            border: `1px solid ${bubbleBorder}`,
+                            color: textPrimary,
+                            fontSize: 13,
+                            lineHeight: 1.5,
+                            whiteSpace: 'pre-wrap',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
+                          }}>
+                            {m.text}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            </div>
+            {/* REPLY Card */}
+            {!isClosedState && (
+              <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Reply
+                </div>
+
+                {/* AI Suggested Block */}
+                {suggestedReplies.length > 0 && showReplyArea && (
+                  <div style={{
+                    padding: '12px 14px',
+                    borderRadius: 12,
+                    background: isDark ? 'rgba(59,130,246,0.1)' : 'rgba(239,246,255,0.7)',
+                    border: `1px solid ${isDark ? 'rgba(59,130,246,0.2)' : 'rgba(191,219,254,0.5)'}`,
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: 10,
-                    background: 'rgba(15,23,42,0.85)',
-                  }}
-                >
-                  {messages.map((m) => (
-                    <div
-                      key={m.id}
-                      style={{
-                        display: 'flex',
-                        justifyContent: m.from === 'user' ? 'flex-start' : m.from === 'agent' ? 'flex-end' : 'flex-start',
-                      }}
-                    >
-                      <div
-                        style={{
-                          maxWidth: '76%',
-                          padding: '8px 10px',
-                          borderRadius: 14,
-                          fontSize: 12,
-                          lineHeight: 1.5,
-                          whiteSpace: 'pre-wrap',
-                          background:
-                            m.from === 'agent'
-                              ? '#FACC15'
-                              : m.from === 'bot'
-                                ? 'rgba(15,23,42,0.9)'
-                                : 'rgba(30,64,175,0.9)',
-                          color: m.from === 'agent' ? '#111827' : '#E5E7EB',
-                          border: '1px solid rgba(15,23,42,0.6)',
-                        }}
-                      >
-                        {m.text}
-                      </div>
+                    gap: 8
+                  }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: accentBlue, textTransform: 'uppercase' }}>AI Suggested Reply</div>
+                    <div style={{ fontSize: 13, color: textPrimary, lineHeight: 1.5 }}>
+                      {suggestedReplies[0]}
                     </div>
-                  ))}
-                </div>
-
-                {escalatedTo && (
-                  <div
-                    style={{
-                      padding: '14px 16px',
-                      borderTop: '1px solid rgba(59,130,246,0.35)',
-                      background: 'rgba(30,64,175,0.18)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 10,
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: '50%',
-                        background: 'rgba(59,130,246,0.25)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: 16,
-                        flexShrink: 0,
-                      }}
-                    >
-                      ↑
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: '#93C5FD' }}>
-                        Ticket escalated to {escalatedTo}
-                      </span>
-                      <span style={{ fontSize: 11, color: '#64748B' }}>
-                        This ticket has been handed off. Replies are disabled for your role.
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {showStartInsteadOfReply && (
-                  <div style={{ padding: 20, borderTop: '1px solid rgba(148,163,184,0.2)', textAlign: 'center', background: 'rgba(15,23,42,0.6)' }}>
-                    <p style={{ fontSize: 13, color: '#94A3B8', marginBottom: 14 }}>
-                      Start working on this ticket to reply and add notes.
-                    </p>
                     <button
-                      type="button"
-                      onClick={() => setStatus('in_progress')}
-                      disabled={saving}
-                      style={{
-                        padding: '12px 24px',
-                        borderRadius: 12,
-                        border: 'none',
-                        background: '#FACC15',
-                        color: '#0F172A',
-                        cursor: saving ? 'default' : 'pointer',
-                        fontSize: 14,
-                        fontWeight: 900,
-                      }}
+                      onClick={() => setReply(suggestedReplies[0])}
+                      style={{ alignSelf: 'flex-start', padding: '6px 12px', borderRadius: 8, border: `1px solid ${accentBlue}`, background: 'transparent', color: accentBlue, fontWeight: 700, fontSize: 11, cursor: 'pointer' }}
                     >
-                      {saving ? 'Starting…' : 'Start'}
+                      Use this reply
                     </button>
                   </div>
                 )}
 
-                {showReplyArea && (
-                  <div
-                    style={{
-                      padding: 12,
-                      borderTop: '1px solid rgba(148,163,184,0.2)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 10,
-                    }}
-                  >
-                    {isWebForm && (
-                      <div
-                        style={{
-                          borderRadius: 12,
-                          border: '1px solid rgba(148,163,184,0.35)',
-                          background: '#020617',
-                          padding: 10,
-                          fontSize: 12,
-                          color: '#E5E7EB',
-                          display: 'grid',
-                          gridTemplateColumns: '56px minmax(0, 1fr)',
-                          rowGap: 4,
-                          columnGap: 8,
-                        }}
-                      >
-                        <div style={{ color: '#94A3B8', fontWeight: 700 }}>To</div>
-                        <div style={{ fontWeight: 600 }}>{ticket.created_by || '—'}</div>
-                        <div style={{ color: '#94A3B8', fontWeight: 700 }}>From</div>
-                        <div style={{ fontWeight: 600 }}>{fromAddress}</div>
-                        <div style={{ color: '#94A3B8', fontWeight: 700 }}>Subject</div>
-                        <div style={{ fontWeight: 600 }}>
-                          {`Re: ${ticket.ticket_number} - ${ticket.subject}`}
-                        </div>
-                      </div>
-                    )}
-
+                {escalatedTo || isEscalatedByMe ? (
+                  <div style={{
+                    padding: '24px',
+                    borderRadius: 12,
+                    background: isDark ? 'rgba(59,130,246,0.05)' : '#F8FAFC',
+                    border: `1px solid ${cardBorder}`,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    color: textSecondary
+                  }}>
+                    <div style={{ fontSize: 24 }}>📤</div>
+                    <div style={{ fontWeight: 800, fontSize: 14, color: textPrimary }}>Ticket Escalated</div>
+                    <div style={{ fontSize: 13 }}>
+                      {escalatedTo ? `This ticket has been moved to ${escalatedTo}` : 'This ticket has been escalated to another tier/agent.'}
+                    </div>
+                  </div>
+                ) : showReplyArea ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     <textarea
                       value={reply}
                       onChange={(e) => setReply(e.target.value)}
                       rows={4}
-                      placeholder={isWebForm ? 'Draft an email reply to the requester…' : 'Write a reply or internal note…'}
+                      placeholder="Custom reply..."
                       style={{
                         width: '100%',
-                        padding: 10,
+                        padding: 12,
                         borderRadius: 12,
-                        border: '1px solid rgba(148,163,184,0.25)',
-                        background: '#020617',
-                        color: '#E5E7EB',
-                        fontSize: 12,
-                        resize: 'vertical',
+                        border: `1px solid ${cardBorder}`,
+                        background: isDark ? '#020617' : '#FFF',
+                        color: textPrimary,
+                        fontSize: 13,
+                        resize: 'none',
+                        outline: 'none'
                       }}
                     />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                      {!isWebForm ? (
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#94A3B8' }}>
-                          <input
-                            type="checkbox"
-                            checked={isInternal}
-                            onChange={(e) => setIsInternal(e.target.checked)}
-                          />
-                          Internal note
-                        </label>
-                      ) : (
-                        <div style={{ fontSize: 11, color: '#94A3B8' }}>
-                          This reply will be sent as an email to the requester.
-                        </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                      {showResolvedComplete && (
+                        <>
+                          <button type="button" onClick={() => setStatus('resolved')} disabled={saving}
+                            style={{ padding: '8px 16px', borderRadius: 10, border: `1px solid rgba(74,222,128,0.5)`, background: 'transparent', color: '#4ADE80', fontWeight: 800, fontSize: 12, cursor: 'pointer' }}>
+                            Resolved
+                          </button>
+                          <button type="button" onClick={() => setStatus('closed')} disabled={saving}
+                            style={{ padding: '8px 16px', borderRadius: 10, border: `1px solid ${cardBorder}`, background: 'transparent', color: textSecondary, fontWeight: 800, fontSize: 12, cursor: 'pointer' }}>
+                            Complete
+                          </button>
+                        </>
                       )}
-                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        {showResolvedComplete && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => setStatus('resolved')}
-                              disabled={saving}
-                              style={{
-                                padding: '8px 14px',
-                                borderRadius: 999,
-                                border: '1px solid rgba(74,222,128,0.6)',
-                                background: 'rgba(74,222,128,0.2)',
-                                color: '#4ADE80',
-                                cursor: saving ? 'default' : 'pointer',
-                                fontSize: 12,
-                                fontWeight: 800,
-                              }}
-                            >
-                              Resolved
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setStatus('closed')}
-                              disabled={saving}
-                              style={{
-                                padding: '8px 14px',
-                                borderRadius: 999,
-                                border: '1px solid rgba(148,163,184,0.5)',
-                                background: 'rgba(148,163,184,0.15)',
-                                color: '#E5E7EB',
-                                cursor: saving ? 'default' : 'pointer',
-                                fontSize: 12,
-                                fontWeight: 800,
-                              }}
-                            >
-                              Complete
-                            </button>
-                          </>
-                        )}
-                        <button
-                          type="button"
-                          onClick={addComment}
-                          disabled={saving}
-                          style={{
-                            padding: '9px 14px',
-                            borderRadius: 999,
-                            border: 'none',
-                            background: '#FACC15',
-                            color: '#0F172A',
-                            cursor: saving ? 'default' : 'pointer',
-                            fontSize: 12,
-                            fontWeight: 950,
-                          }}
-                        >
-                          {syncing ? 'Syncing thread…' : saving ? 'Sending…' : isWebForm ? 'Send email' : 'Send'}
-                        </button>
-                      </div>
+                      <button type="button" onClick={addComment} disabled={saving}
+                        style={{ padding: '8px 20px', borderRadius: 10, border: 'none', background: '#FACC15', color: '#0F172A', fontWeight: 900, fontSize: 13, cursor: 'pointer' }}>
+                        {saving ? 'Sending…' : isWebForm ? 'Send email' : 'Send'}
+                      </button>
                     </div>
                   </div>
+                ) : (
+                  <button
+                    onClick={assignToMe}
+                    disabled={saving}
+                    style={{
+                      width: '100%',
+                      padding: '12px',
+                      borderRadius: 12,
+                      background: isDark ? 'rgba(234,179,8,0.1)' : '#FFFBEB',
+                      border: '1px solid #FEF3C7',
+                      color: '#D97706',
+                      fontSize: 13,
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease'
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.background = isDark ? 'rgba(234,179,8,0.15)' : '#FEF3C7';
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.background = isDark ? 'rgba(234,179,8,0.1)' : '#FFFBEB';
+                    }}
+                  >
+                    {saving ? 'Assigning...' : 'Start working on this ticket to reply'}
+                  </button>
                 )}
-              </>
-            )}
-
-            {tab === 'details' && (
-              <div style={{ padding: 12 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 10, fontSize: 12 }}>
-                  {[
-                    ['Ticket', ticket.ticket_number],
-                    ['Status', ticket.status],
-                    ['Priority', ticket.priority],
-                    ['Source', ticket.source],
-                    ['Created', ticket.created_at ? new Date(ticket.created_at).toLocaleString() : '—'],
-                    ['Updated', ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : '—'],
-                    ['Assigned to', ticket.assigned_to || '—'],
-                    ['Tenant product', ticket.tenant_product_id || '—'],
-                    ['Escalation level', String(ticket.escalation_level)],
-                    ...((ticket as any).escalated_by_name ? [['Escalated by', (ticket as any).escalated_by_name] as const] : []),
-                  ].map(([k, v]) => (
-                    <React.Fragment key={k}>
-                      <div style={{ color: '#94A3B8', fontWeight: 800 }}>{k}</div>
-                      <div style={{ color: '#E5E7EB', fontWeight: 700, whiteSpace: 'pre-wrap' }}>{String(v ?? '—')}</div>
-                    </React.Fragment>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {tab === 'sla' && (
-              <div style={{ padding: 12 }}>
-                <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 900, marginBottom: 10 }}>SLA overview</div>
-                <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)' }}>
-                  <div style={{ fontSize: 13, fontWeight: 950, color: sla.color }}>{sla.label}</div>
-                  <div style={{ marginTop: 6, fontSize: 12, color: '#E5E7EB' }}>
-                    Deadline: <span style={{ fontWeight: 900 }}>{ticket.sla_deadline ? new Date(ticket.sla_deadline).toLocaleString() : '—'}</span>
-                  </div>
-                  {sla.timeText && (
-                    <div style={{ marginTop: 6, fontSize: 12, color: '#E5E7EB' }}>
-                      {sla.timeText}
-                    </div>
-                  )}
-                  <div style={{ marginTop: 10, fontSize: 12, color: '#94A3B8' }}>
-                    {ticket.tenant_product_id
-                      ? 'SLA is based on the policy for this product. Pause/resume and 75% warnings can be added later.'
-                      : 'No product linked; set a product to use SLA policies. Pause/resume and 75% warnings can be added later.'}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {tab === 'escalations' && (
-              <div style={{ padding: 12 }}>
-                <div style={{ fontSize: 12, color: '#94A3B8', fontWeight: 900, marginBottom: 10 }}>Escalations</div>
-                <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)', fontSize: 12 }}>
-                  <div style={{ color: '#E5E7EB', fontWeight: 900 }}>
-                    Current level: {Number(ticket.escalation_level || 0) === 4 ? 'Admin' : `L${Number(ticket.escalation_level || 0)}`}
-                  </div>
-                  {nextEscalationRole && (
-                    <div style={{ marginTop: 12 }}>
-                      <div style={{ color: '#94A3B8', fontWeight: 800, marginBottom: 6 }}>
-                        {nextEscalationRole.label} (next in line)
-                      </div>
-                      {nextEscalationRole.role !== 'tenant_admin' && !ticket?.tenant_product_id ? (
-                        <div style={{ color: '#94A3B8' }}>Link ticket to a product to see escalation agents.</div>
-                      ) : nextEscalationAgents.length === 0 ? (
-                        <div style={{ color: '#94A3B8' }}>
-                          {nextEscalationRole.role === 'tenant_admin' ? 'No Admin users in this tenant.' : `No ${nextEscalationRole.label} agents assigned to this product.`}
-                        </div>
-                      ) : (
-                        <ul style={{ margin: 0, paddingLeft: 16, color: '#E5E7EB', lineHeight: 1.8 }}>
-                          {nextEscalationAgents.map((a) => {
-                            const name = [a.first_name, a.last_name].filter(Boolean).join(' ').trim() || a.email || 'Agent';
-                            return <li key={a.id}>{name}</li>;
-                          })}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-                  <div style={{ marginTop: 16, color: '#94A3B8', fontWeight: 800, marginBottom: 6 }}>Escalation history</div>
-                  {escalationHistoryLoading ? (
-                    <div style={{ color: '#94A3B8', fontSize: 12 }}>Loading…</div>
-                  ) : escalationHistory.length === 0 ? (
-                    <div style={{ color: '#94A3B8', fontSize: 12 }}>No escalations recorded yet. L1 → L2 → L3 → Admin path is tracked here.</div>
-                  ) : (
-                    <ul style={{ margin: 0, paddingLeft: 16, color: '#E5E7EB', lineHeight: 2, listStyle: 'none' }}>
-                      {escalationHistory.map((entry, idx) => {
-                        const fromLabel = entry.from_level === 4 ? 'Admin' : `L${entry.from_level}`;
-                        const toLabel = entry.to_level === 4 ? 'Admin' : `L${entry.to_level}`;
-                        const by = entry.triggered_by_name ? ` by ${entry.triggered_by_name}` : '';
-                        const date = entry.created_at ? new Date(entry.created_at).toLocaleString() : '';
-                        return (
-                          <li key={idx} style={{ borderLeft: '3px solid rgba(59,130,246,0.5)', paddingLeft: 10, marginBottom: 6 }}>
-                            {fromLabel} → {toLabel}{by} — {date}
-                            {entry.trigger_reason && entry.trigger_reason !== 'manual' && (
-                              <span style={{ color: '#94A3B8', fontSize: 11 }}> ({entry.trigger_reason})</span>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
               </div>
             )}
           </div>
 
-          {/* Right panel */}
-          <div style={{ border: '1px solid rgba(148,163,184,0.25)', borderRadius: 16, background: 'rgba(15,23,42,0.65)', overflow: 'hidden' }}>
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid rgba(148,163,184,0.2)', color: '#94A3B8', fontSize: 11, fontWeight: 900 }}>
-              Agent Assist
-            </div>
-            <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)' }}>
-                <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 900, marginBottom: 6 }}>SLA</div>
-                <div style={{ fontSize: 14, fontWeight: 950, color: sla.color }}>{sla.label}</div>
-                <div style={{ marginTop: 6, fontSize: 12, color: '#E5E7EB' }}>
-                  {ticket.sla_deadline ? `Deadline: ${new Date(ticket.sla_deadline).toLocaleString()}` : 'No deadline set'}
+          {/* Right Column Stack */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            {/* RESOLUTION SLA Card */}
+            <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Resolution SLA
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                  <span style={{ color: textSecondary }}>First response</span>
+                  <span style={{ color: hasFirstResponse ? '#4ADE80' : '#FACC15', fontWeight: 700 }}>{hasFirstResponse ? 'Met' : 'Pending'}</span>
                 </div>
-                {sla.timeText && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: '#E5E7EB', fontWeight: 700 }}>
-                    {sla.timeText}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+                  <span style={{ color: textSecondary }}>Resolution</span>
+                  <span style={{ color: sla.color, fontWeight: 700 }}>{sla.timeText}</span>
+                </div>
+                {/* Progress bar */}
+                <div style={{ height: 8, background: isDark ? 'rgba(255,255,255,0.05)' : '#F1F5F9', borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{ width: `${sla.progress}%`, height: '100%', background: sla.color }} />
+                </div>
+                <div style={{ fontSize: 11, color: textSecondary }}>
+                  {Math.round(100 - sla.progress)}% time remaining · Due {ticket.sla_deadline ? new Date(ticket.sla_deadline).toLocaleString('en-US', { hour: '2-digit', minute: '2-digit' }) : 'today'}
+                </div>
+              </div>
+            </div>
+
+            {/* TIMELINE Card */}
+            <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Timeline
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                {/* Created */}
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#22C55E', marginTop: 4, flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary }}>Created via {ticket.source}</div>
+                    <div style={{ fontSize: 11, color: textSecondary }}>
+                      {ticket.created_at ? new Date(ticket.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                    </div>
+                  </div>
+                </div>
+                {/* Assigned */}
+                {ticket.assigned_to_name && (
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#3B82F6', marginTop: 4, flexShrink: 0 }} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary }}>Assigned to {ticket.assigned_to_name}</div>
+                      <div style={{ fontSize: 11, color: textSecondary }}>Ticket claimed</div>
+                    </div>
                   </div>
                 )}
+                {/* Escalations */}
+                {escalationHistory.map((entry, idx) => (
+                  <div key={idx} style={{ display: 'flex', gap: 12 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#F59E0B', marginTop: 4, flexShrink: 0 }} />
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary }}>Level {entry.from_level} → {entry.to_level}</div>
+                      <div style={{ fontSize: 11, color: textSecondary }}>{entry.created_at ? new Date(entry.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</div>
+                    </div>
+                  </div>
+                ))}
               </div>
+            </div>
 
-              <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)' }}>
-                <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 900, marginBottom: 6 }}>Knowledge base</div>
-                <div style={{ fontSize: 12, color: '#94A3B8' }}>
-                  KB/RAG suggestions panel will show top matches and “Insert into reply”.
-                </div>
+            {/* INTERNAL NOTE Card */}
+            <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, marginBottom: 16, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Internal Notes
               </div>
-
-              <div style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(2,6,23,0.55)' }}>
-                <div style={{ fontSize: 11, color: '#94A3B8', fontWeight: 900, marginBottom: 6 }}>AI suggested replies</div>
-                <div style={{ fontSize: 12, color: '#94A3B8' }}>
-                  Next: generate 2–3 drafts using past resolutions + KB context (phase 2).
-                </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20, maxHeight: 300, overflowY: 'auto' }}>
+                {messages.filter(m => m.is_internal).map((m) => (
+                  <div key={m.id} style={{ padding: '10px 12px', borderRadius: 12, background: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.02)', border: `1px solid ${cardBorder}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: accentBlue }}>{m.author_name || 'Agent'}</span>
+                      <span style={{ fontSize: 10, color: textSecondary }}>{m.created_at ? new Date(m.created_at).toLocaleString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: textPrimary, whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                  </div>
+                ))}
+                {messages.filter(m => m.is_internal).length === 0 && (
+                  <div style={{ fontSize: 12, color: textSecondary, fontStyle: 'italic', textAlign: 'center', padding: '10px 0' }}>No internal notes yet.</div>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <textarea
+                  value={internalNoteText}
+                  onChange={(e) => setInternalNoteText(e.target.value)}
+                  rows={3}
+                  placeholder="Internal note (not visible to user)..."
+                  style={{
+                    width: '100%',
+                    padding: 10,
+                    borderRadius: 12,
+                    border: `1px solid ${cardBorder}`,
+                    background: isDark ? '#020617' : '#FFF',
+                    color: textPrimary,
+                    fontSize: 12,
+                    resize: 'none',
+                    outline: 'none'
+                  }}
+                />
+                <button
+                  onClick={addInternalNote}
+                  disabled={saving || !internalNoteText.trim()}
+                  style={{ padding: '8px', borderRadius: 10, border: `1px solid ${cardBorder}`, background: '#FFF', color: textPrimary, fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
+                >
+                  {saving ? 'Saving...' : 'Post note'}
+                </button>
               </div>
             </div>
           </div>

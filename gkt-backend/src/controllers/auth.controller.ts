@@ -49,6 +49,11 @@ export async function register(req: Request, res: Response): Promise<void> {
     const base = company.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'tenant';
     const tenantSlug = `${base}-${Date.now().toString(36)}`;
 
+    // Auto-assign the Free Trial plan to new tenants
+    const freeTrial = await prisma.billingPlan.findFirst({
+      where: { is_free_trial: true, is_active: true },
+    });
+
     const tenant = await prisma.tenant.create({
       data: {
         product_id: product.id,
@@ -58,6 +63,7 @@ export async function register(req: Request, res: Response): Promise<void> {
         contact_email: encryptPII(email),
         contact_email_hash: email_hash,
         created_by: 'self_signup',
+        ...(freeTrial ? { plan_id: freeTrial.id, trial_started_at: new Date() } : {}),
       },
     });
 

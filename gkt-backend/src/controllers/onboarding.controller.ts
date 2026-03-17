@@ -46,6 +46,7 @@ export async function getOnboarding(req: AuthRequest, res: Response): Promise<vo
         tenant_products: tenant.tenant_products,
         ticket_settings: tenant.ticket_settings,
         agent_count: agentCount,
+        trial_started_at: (tenant as any).trial_started_at ?? null,
       },
     });
   } catch (e) {
@@ -368,7 +369,8 @@ export async function inviteAgent(req: AuthRequest, res: Response): Promise<void
       res.status(409).json({ error: 'User with this email already exists' });
       return;
     }
-    const tempPassword = Math.random().toString(36).slice(-10);
+    // Default initial password for dashboard-created agents
+    const tempPassword = '12345678';
     const passwordHash = await bcrypt.hash(tempPassword, 10);
     const desiredRoleName =
       role === 'tenant_admin'

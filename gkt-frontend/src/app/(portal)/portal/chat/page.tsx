@@ -12,7 +12,8 @@ interface Message {
   id: string;
   from: 'user' | 'bot' | 'system';
   text: string;
-  author_name?: string;   // agent display name for differentiation
+  author_name?: string;
+  bold_prefix?: string;   // decrypted part to show in bold (e.g. agent name)
   created_at?: string | Date;
 }
 
@@ -42,6 +43,7 @@ export default function PortalChatPage() {
   >([]);
   const [ticketLoading, setTicketLoading] = useState(false);
   const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+  const [conversationClosed, setConversationClosed] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: 'welcome',
@@ -53,34 +55,74 @@ export default function PortalChatPage() {
   const [error, setError] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const hasWindow = typeof window !== 'undefined';
-  const pollRef = useRef<NodeJS.Timeout | null>(null); // kept for backward compatibility but no longer used for Mongo polling
+  const pollRef = useRef<NodeJS.Timeout | null>(null);
   const ticketSocketRef = useRef<Socket | null>(null);
+  const loadTicketMessagesRef = useRef<(ticketId: string) => Promise<void>>(() => Promise.resolve());
+  const activeTicketIdRef = useRef<string | null>(null);
+  const conversationClosedRef = useRef(false);
+
+  const sessionStorageKey = tenantId && tenantProductId ? `gkt_bot_session_${tenantId}_${tenantProductId}` : null;
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  // On start: load full conversation from Mongo if we have a session, otherwise show welcome message
   useEffect(() => {
-    if (!tenantId) {
-      setWelcomeLoading(false);
+    if (!tenantId || !tenantProductId || !mounted) {
+      if (!tenantId) setWelcomeLoading(false);
       return;
     }
     setWelcomeLoading(true);
-    botApi
-      .welcomeMessage(tenantId, tenantProductId)
-      .then((res) => {
-        const message = typeof res.data?.message === 'string' ? res.data.message.trim() : '';
-        if (message) {
-          setMessages((prev) =>
-            prev.length === 1 && prev[0].id === 'welcome'
-              ? [{ id: 'welcome', from: 'bot', text: message }]
-              : prev
-          );
-        }
-      })
-      .catch(() => {})
-      .finally(() => setWelcomeLoading(false));
-  }, [tenantId, tenantProductId]);
+    const sessionIdFromUrl = search.get('session_id');
+    const sessionIdFromStorage = hasWindow && sessionStorageKey ? sessionStorage.getItem(sessionStorageKey) : null;
+    const existingSessionId = sessionIdFromUrl || sessionIdFromStorage;
+
+    if (existingSessionId) {
+      botApi
+        .getConversation(tenantId, tenantProductId, existingSessionId)
+        .then((res) => {
+          const list = res.data?.messages;
+          if (Array.isArray(list) && list.length > 0) {
+            setMessages(
+              list.map((m: any) => ({
+                id: m.id,
+                from: (m.from === 'agent' ? 'bot' : m.from) as Message['from'],
+                text: String(m.text ?? ''),
+                author_name: m.author_name,
+                created_at: m.created_at,
+              }))
+            );
+            setSessionId(existingSessionId);
+          } else {
+            return botApi.welcomeMessage(tenantId, tenantProductId).then((w) => {
+              const msg = typeof w.data?.message === 'string' ? w.data.message.trim() : '';
+              if (msg) setMessages([{ id: 'welcome', from: 'bot', text: msg }]);
+            });
+          }
+        })
+        .catch(() => botApi.welcomeMessage(tenantId, tenantProductId).then((w) => {
+          const msg = typeof w.data?.message === 'string' ? w.data.message.trim() : '';
+          if (msg) setMessages([{ id: 'welcome', from: 'bot', text: msg }]);
+        }))
+        .finally(() => setWelcomeLoading(false));
+    } else {
+      botApi
+        .welcomeMessage(tenantId, tenantProductId)
+        .then((res) => {
+          const message = typeof res.data?.message === 'string' ? res.data.message.trim() : '';
+          if (message) {
+            setMessages((prev) =>
+              prev.length === 1 && prev[0].id === 'welcome'
+                ? [{ id: 'welcome', from: 'bot', text: message }]
+                : prev
+            );
+          }
+        })
+        .catch(() => {})
+        .finally(() => setWelcomeLoading(false));
+    }
+  }, [tenantId, tenantProductId, mounted, sessionStorageKey, search]);
 
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -101,6 +143,7 @@ export default function PortalChatPage() {
 
     const socket = getSocket();
     ticketSocketRef.current = socket;
+    activeTicketIdRef.current = activeTicketId;
     if (!socket.connected) {
       socket.connect();
     }
@@ -144,14 +187,38 @@ export default function PortalChatPage() {
       }]);
     };
 
+    const closedHandler = (payload: any) => {
+      if (!payload || payload.ticket_id !== activeTicketId) return;
+      const closedMessage = payload.closed_message || 'Thank you for contacting us. This conversation is now closed.';
+      setMessages((prev) => [...prev, {
+        id: `sys-closed-${Date.now()}`,
+        from: 'system' as const,
+        text: closedMessage,
+      }]);
+      setConversationClosed(true);
+      socket.emit('leave:ticket', activeTicketId);
+      // Refresh conversation from server so chatbot shows closed state
+      loadTicketMessagesRef.current(activeTicketId);
+    };
+
+    const disconnectHandler = () => {
+      // When websocket closes, refresh so we show conversation closed if we missed ticket:closed
+      const tid = activeTicketIdRef.current;
+      if (tid) loadTicketMessagesRef.current(tid);
+    };
+
     socket.on('ticket:message', messageHandler);
     socket.on('ticket:escalated', escalatedHandler);
     socket.on('ticket:agent_started', agentStartedHandler);
+    socket.on('ticket:closed', closedHandler);
+    socket.on('disconnect', disconnectHandler);
 
     return () => {
       socket.off('ticket:message', messageHandler);
       socket.off('ticket:escalated', escalatedHandler);
       socket.off('ticket:agent_started', agentStartedHandler);
+      socket.off('ticket:closed', closedHandler);
+      socket.off('disconnect', disconnectHandler);
       socket.emit('leave:ticket', activeTicketId);
     };
   }, [view, activeTicketId]);
@@ -166,7 +233,40 @@ export default function PortalChatPage() {
     };
   }, []);
 
+  // Polling fallback: every 5 s refresh messages when a ticket is active and not yet closed.
+  // This ensures the closed state is shown even when the socket event is missed.
+  useEffect(() => {
+    if (view !== 'tickets' || !activeTicketId) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return;
+    }
+    if (pollRef.current) { clearInterval(pollRef.current); }
+    pollRef.current = setInterval(() => {
+      if (conversationClosedRef.current) {
+        clearInterval(pollRef.current!);
+        pollRef.current = null;
+        return;
+      }
+      const tid = activeTicketIdRef.current;
+      if (tid) loadTicketMessagesRef.current(tid);
+    }, 5000);
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [view, activeTicketId]);
+
   if (!mounted) return null;
+
+  const renderMessageContent = (m: Message) => {
+    if (m.bold_prefix && m.text.startsWith(m.bold_prefix)) {
+      const rest = m.text.slice(m.bold_prefix.length);
+      return (
+        <>
+          <strong style={{ fontWeight: 700 }}>{m.bold_prefix}</strong>
+          {rest}
+        </>
+      );
+    }
+    return m.text;
+  };
 
   const handleSend = async () => {
     // Ticket reply mode
@@ -186,6 +286,7 @@ export default function PortalChatPage() {
             from: (m.from === 'agent' ? 'bot' : m.from) as Message['from'],
             author_name: m.author_name || undefined,
             text: String(m.text || ''),
+            bold_prefix: m.bold_prefix,
             created_at: m.created_at,
           })),
         );
@@ -220,7 +321,10 @@ export default function PortalChatPage() {
         user_email: userEmail,
       });
       const replyText = (res.data?.reply as string) || 'Bot did not return a reply.';
-      if (typeof res.data?.session_id === 'string') setSessionId(res.data.session_id);
+      if (typeof res.data?.session_id === 'string') {
+        setSessionId(res.data.session_id);
+        if (hasWindow && sessionStorageKey) sessionStorage.setItem(sessionStorageKey, res.data.session_id);
+      }
       if (res.data?.ended === true) setEnded(true);
       const botMsg: Message = {
         id: `${id}-bot`,
@@ -228,6 +332,20 @@ export default function PortalChatPage() {
         text: replyText,
       };
       setMessages((prev) => [...prev, botMsg]);
+      // When user accepted "create a ticket?" (e.g. replied "yes"), switch to ticket view
+      const handoffData = res.data?.handoff as { ticket_id?: string; ticket_number?: string } | undefined;
+      if (handoffData?.ticket_id && tenantId && userEmail) {
+        setEnded(true);
+        if (ticketSocketRef.current) {
+          ticketSocketRef.current.off('ticket:message');
+          disconnectSocket();
+          ticketSocketRef.current = null;
+        }
+        setView('tickets');
+        setActiveTicketId(handoffData.ticket_id);
+        await loadTickets();
+        await loadTicketMessagesRef.current(handoffData.ticket_id);
+      }
     } catch (e: any) {
       setError(e?.message || 'Failed to send message');
     } finally {
@@ -236,7 +354,8 @@ export default function PortalChatPage() {
   };
 
   const lastBot = [...messages].reverse().find((m) => m.from === 'bot');
-  const showActions = !ended && !!sessionId && !!lastBot?.text?.toLowerCase().includes('did this solve it?');
+  // Show feedback / handoff buttons after every bot reply (while session is active).
+  const showActions = !ended && !!sessionId && !!lastBot;
 
   const handleClose = () => {
     if (!hasWindow) return;
@@ -251,8 +370,10 @@ export default function PortalChatPage() {
   const handleNewChat = () => {
     setView('bot');
     setActiveTicketId(null);
+    setConversationClosed(false);
     if (pollRef.current) clearInterval(pollRef.current);
     setSessionId(null);
+    if (hasWindow && sessionStorageKey) sessionStorage.removeItem(sessionStorageKey);
     setEnded(false);
     setMessages([{ id: 'welcome', from: 'bot', text: 'Hi! How can I help you today?' }]);
     setError('');
@@ -298,12 +419,18 @@ export default function PortalChatPage() {
     try {
       const res = await widgetApi.getTicketMessages(ticketId, tenantId, userEmail, tenantProductId);
       const msgs = (res.data?.messages as any[]) || [];
+      const hasClosedMessage = msgs.some((m: any) =>
+        String(m.text || '').toLowerCase().includes('this conversation is now closed'),
+      );
+      conversationClosedRef.current = hasClosedMessage;
+      setConversationClosed(hasClosedMessage);
       setMessages(
         msgs.map((m: any) => ({
           id: String(m.id),
           from: (m.from === 'agent' ? 'bot' : m.from) as Message['from'],
           author_name: m.author_name || undefined,
           text: String(m.text || ''),
+          bold_prefix: m.bold_prefix,
           created_at: m.created_at,
         })),
       );
@@ -311,6 +438,7 @@ export default function PortalChatPage() {
       setError(e?.message || 'Failed to load ticket messages');
     }
   };
+  loadTicketMessagesRef.current = loadTicketMessages;
 
   const handleYes = () => {
     setInput('yes');
@@ -436,6 +564,7 @@ export default function PortalChatPage() {
                 setView('bot');
                 setError('');
                 setActiveTicketId(null);
+    setConversationClosed(false);
                 if (pollRef.current) clearInterval(pollRef.current);
               }}
               style={{
@@ -575,62 +704,69 @@ export default function PortalChatPage() {
                 gap: 8,
               }}
             >
-              {activeTicketId && (
-                <div
-                  style={{
-                    marginBottom: 8,
-                    padding: '8px 10px',
-                    borderRadius: 10,
-                    background: 'linear-gradient(90deg, rgba(30,64,175,0.9), rgba(56,189,248,0.85))',
-                    color: '#F9FAFB',
-                    fontSize: 11,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                    boxShadow: '0 8px 16px rgba(15,23,42,0.5)',
-                  }}
-                >
-                  <span style={{ fontWeight: 600 }}>
-                    {(() => {
-                      const t = ticketList.find((x) => x.id === activeTicketId);
-                      if (!t) return null;
-                      const s = (t.status || '').toLowerCase();
-                      if (!t.assigned_to) {
-                        return 'Waiting for an agent to be assigned…';
-                      }
-                      if (s === 'new_ticket' || s === 'open') {
-                        return 'An agent has been assigned and will get back to you soon.';
-                      }
-                      if (s === 'in_progress') {
-                        return 'You are now chatting with a support agent.';
-                      }
-                      return null;
-                    })()}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!activeTicketId) return;
-                      loadTickets();
-                      loadTicketMessages(activeTicketId);
-                    }}
+              {activeTicketId && (() => {
+                const t = ticketList.find((x) => x.id === activeTicketId);
+                const s = (t?.status || '').toLowerCase();
+                const isClosed = conversationClosed || s === 'resolved' || s === 'closed';
+                return (
+                  <div
                     style={{
-                      padding: '4px 8px',
-                      borderRadius: 999,
-                      border: '1px solid rgba(15,23,42,0.35)',
-                      background: 'rgba(15,23,42,0.15)',
-                      color: '#EFF6FF',
-                      fontSize: 10,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
+                      marginBottom: 8,
+                      padding: '8px 10px',
+                      borderRadius: 10,
+                      background: isClosed
+                        ? 'linear-gradient(90deg, rgba(22,163,74,0.9), rgba(34,197,94,0.85))'
+                        : 'linear-gradient(90deg, rgba(30,64,175,0.9), rgba(56,189,248,0.85))',
+                      color: '#F9FAFB',
+                      fontSize: 11,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      boxShadow: isClosed ? '0 8px 16px rgba(15,23,42,0.4)' : '0 8px 16px rgba(15,23,42,0.5)',
                     }}
                   >
-                    Refresh
-                  </button>
-                </div>
-              )}
+                    <span style={{ fontWeight: 600 }}>
+                      {isClosed
+                        ? 'Conversation closed. Thank you for contacting us.'
+                        : (() => {
+                            if (!t) return null;
+                            if (!t.assigned_to) {
+                              return 'Waiting for an agent to be assigned…';
+                            }
+                            if (s === 'new_ticket' || s === 'open') {
+                              return 'An agent has been assigned and will get back to you soon.';
+                            }
+                            if (s === 'in_progress') {
+                              return 'You are now chatting with a support agent.';
+                            }
+                            return null;
+                          })()}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!activeTicketId) return;
+                        loadTickets();
+                        loadTicketMessages(activeTicketId);
+                      }}
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: 999,
+                        border: '1px solid rgba(15,23,42,0.35)',
+                        background: 'rgba(15,23,42,0.15)',
+                        color: '#EFF6FF',
+                        fontSize: 10,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                );
+              })()}
               {messages.map((m) => {
                 if (m.from === 'system') {
                   return (
@@ -645,18 +781,17 @@ export default function PortalChatPage() {
                     </div>
                   );
                 }
+                const senderLabel = m.from === 'user' ? 'You' : (m.from === 'bot' && m.author_name ? m.author_name : 'Bot');
                 return (
                   <div key={m.id} style={{ display: 'flex', justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: m.from === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
-                      {m.from === 'bot' && m.author_name && (
-                        <span style={{ fontSize: 10, color: '#94A3B8', marginBottom: 2, paddingLeft: 4 }}>{m.author_name}</span>
-                      )}
+                      <span style={{ fontSize: 10, color: '#94A3B8', marginBottom: 2, paddingLeft: 4, paddingRight: 4 }}>{senderLabel}</span>
                       <div style={{
                         padding: '8px 10px', borderRadius: 14, fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap',
                         background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
                         color: m.from === 'user' ? '#111827' : '#E5E7EB',
                       }}>
-                        {m.text}
+                        {renderMessageContent(m)}
                       </div>
                     </div>
                   </div>
@@ -710,18 +845,17 @@ export default function PortalChatPage() {
                     </div>
                   );
                 }
+                const senderLabel = m.from === 'user' ? 'You' : (m.from === 'bot' && m.author_name ? m.author_name : 'Bot');
                 return (
                   <div key={m.id} style={{ display: 'flex', justifyContent: m.from === 'user' ? 'flex-end' : 'flex-start' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: m.from === 'user' ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
-                      {m.from === 'bot' && m.author_name && (
-                        <span style={{ fontSize: 10, color: '#94A3B8', marginBottom: 2, paddingLeft: 4 }}>{m.author_name}</span>
-                      )}
+                      <span style={{ fontSize: 10, color: '#94A3B8', marginBottom: 2, paddingLeft: 4, paddingRight: 4 }}>{senderLabel}</span>
                       <div style={{
                         padding: '8px 10px', borderRadius: 14, fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap',
                         background: m.from === 'user' ? primaryColor : 'rgba(15,23,42,0.9)',
                         color: m.from === 'user' ? '#111827' : '#E5E7EB',
                       }}>
-                        {m.text}
+                        {renderMessageContent(m)}
                       </div>
                     </div>
                   </div>
@@ -796,14 +930,16 @@ export default function PortalChatPage() {
               onKeyDown={handleKeyDown}
               placeholder={
                 view === 'tickets'
-                  ? activeTicketId
-                    ? 'Reply to this ticket...'
-                    : 'Select a ticket to reply...'
+                  ? conversationClosed
+                    ? 'This conversation is closed'
+                    : activeTicketId
+                      ? 'Reply to this ticket...'
+                      : 'Select a ticket to reply...'
                   : ended
                     ? 'Conversation ended'
                     : 'Ask a question...'
               }
-              disabled={view === 'tickets' ? !activeTicketId : ended}
+              disabled={view === 'tickets' ? !activeTicketId || conversationClosed : ended}
               style={{
                 flex: 1,
                 padding: '8px 10px',
@@ -818,7 +954,7 @@ export default function PortalChatPage() {
             />
             <button
               type="button"
-              disabled={sending || (view === 'bot' && ended) || (view === 'tickets' && !activeTicketId)}
+              disabled={sending || (view === 'bot' && ended) || (view === 'tickets' && (!activeTicketId || conversationClosed))}
               onClick={handleSend}
               style={{
                 padding: '8px 12px',

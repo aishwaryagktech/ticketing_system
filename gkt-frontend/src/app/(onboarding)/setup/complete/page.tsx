@@ -35,12 +35,11 @@ export default function SetupCompletePage() {
       <div style={{ fontSize: 64, marginBottom: 24 }}>🎉</div>
       <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12 }}>Your support system is ready</h1>
       <p style={{ fontSize: 16, color: textSecondary, marginBottom: 32, maxWidth: 420, margin: '0 auto 32px' }}>
-        Products, agents, ticket settings, SLA, and channels are configured. You can refine everything from the Admin dashboard.
+        Products, agents, SLA, and channels are configured. You can refine everything from the Admin dashboard.
       </p>
       <div style={{ display: 'inline-flex', gap: 16, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 32, padding: 20, border: `1px solid ${borderColor}`, borderRadius: 12, background: isDark ? 'rgba(255,255,255,0.03)' : '#f8fafc' }}>
         <span style={{ fontSize: 14, color: textSecondary }}>✓ Products</span>
         <span style={{ fontSize: 14, color: textSecondary }}>✓ Agents</span>
-        <span style={{ fontSize: 14, color: textSecondary }}>✓ Ticket settings</span>
         <span style={{ fontSize: 14, color: textSecondary }}>✓ SLA & Escalation</span>
         <span style={{ fontSize: 14, color: textSecondary }}>✓ Channels</span>
       </div>

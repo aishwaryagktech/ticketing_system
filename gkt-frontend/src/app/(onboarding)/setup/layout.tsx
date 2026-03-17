@@ -10,7 +10,6 @@ import { onboardingApi } from '@/lib/api/onboarding.api';
 const SETUP_STEPS: { path: string; label: string; short: string }[] = [
   { path: '/setup/products', label: 'Add Products', short: 'Products' },
   { path: '/setup/agents', label: 'Invite Agents', short: 'Agents' },
-  { path: '/setup/ticket-settings', label: 'Ticket Settings', short: 'Tickets' },
   { path: '/setup/sla', label: 'SLA Configuration', short: 'SLA' },
   { path: '/setup/escalation', label: 'Escalation Rules', short: 'Escalation' },
   { path: '/setup/knowledge-base', label: 'Knowledge Base', short: 'KB' },

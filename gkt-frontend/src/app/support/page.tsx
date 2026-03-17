@@ -312,7 +312,7 @@ export default function PublicSupportFormPage() {
                   opacity: isSubmitting ? 0.8 : 1,
                 }}
               >
-                No, I need a human
+                I need more assistance
               </button>
             </div>
           </div>

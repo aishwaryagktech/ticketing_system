@@ -28,7 +28,7 @@ export interface ChatMessage {
 export interface AIAdapter {
   classify(text: string): Promise<ClassifyResult>;
   detectSentiment(text: string): Promise<SentimentResult>;
-  suggestReply(ticket: any, history: any[]): Promise<string[]>;
+  suggestReply(ticket: any, history: any[], kbContext?: string): Promise<string[]>;
   checkDuplicate(text: string, productId: string): Promise<DuplicateResult>;
   chat(messages: ChatMessage[], kbContext: string): Promise<string>;
   embed(text: string): Promise<number[]>;

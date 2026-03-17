@@ -9,6 +9,7 @@ router.use(auth);
 
 // Agent self endpoints (available to agents + admins)
 router.get('/me/products', agentController.myProducts);
+router.get('/me/dashboard-stats', agentController.getDashboardStats);
 
 // Admin-only endpoints
 router.use(rbac('tenant_admin', 'super_admin'));

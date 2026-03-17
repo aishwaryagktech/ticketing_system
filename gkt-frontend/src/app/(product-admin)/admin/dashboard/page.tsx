@@ -6,6 +6,11 @@ import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/store/auth.store';
 import { onboardingApi, type ConfigurationStatus } from '@/lib/api/onboarding.api';
 import { billingApi } from '@/lib/api/billing.api';
+import { analyticsApi } from '@/lib/api/analytics.api';
+import {
+  ResponsiveContainer, AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, Tooltip, CartesianGrid, Legend,
+} from 'recharts';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 
@@ -15,7 +20,6 @@ type ConfigSection =
   | 'people'
   | 'configuration-hub'
   | 'agents'
-  | 'ticket-settings'
   | 'sla'
   | 'escalation'
   | 'kb'
@@ -35,6 +39,20 @@ type TenantProduct = {
 };
 
 type Agent = any;
+
+function deriveNameFromEmail(raw: string | null | undefined): string {
+  const email = (raw || '').trim();
+  if (!email) return '—';
+  const local = email.split('@')[0] || '';
+  if (!local) return email;
+  const cleaned = local.replace(/[._-]+/g, ' ').trim();
+  if (!cleaned) return email;
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
 
 interface TicketSettingsInlineProps {
   isDark: boolean;
@@ -1958,9 +1976,12 @@ function ChannelsInline(props: ChannelsInlineProps) {
               background: isDark ? '#020617' : '#0F172A',
               padding: 10,
               fontSize: 11,
-              color: isDark ? '#E5E7EB' : '#E5E7EB',
+              color: '#E5E7EB',
               fontFamily: 'monospace',
               whiteSpace: 'pre',
+              overflowX: 'auto',
+              maxWidth: '100%',
+              minWidth: 0,
             }}
           >
             {widgetScript}
@@ -2064,58 +2085,14 @@ function ChannelsInline(props: ChannelsInlineProps) {
                 fontFamily: 'monospace',
                 whiteSpace: 'pre',
                 overflowX: 'auto',
+                maxWidth: '100%',
+                minWidth: 0,
               }}
             >
               {iframeSnippet}
             </div>
           </div>
 
-          <div
-            style={{
-              marginTop: 8,
-              paddingTop: 8,
-              borderTop: `1px solid ${borderSubtle}`,
-              fontSize: 12,
-              color: textSecondary,
-            }}
-          >
-            Email-to-ticket
-          </div>
-          <label
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              fontSize: 11,
-              color: textSecondary,
-              cursor: 'pointer',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={emailEnabled}
-              onChange={(e) => setEmailEnabled(e.target.checked)}
-            />
-            Enabled
-          </label>
-          <input
-            type="email"
-            value={supportEmail}
-            onChange={(e) => setSupportEmail(e.target.value)}
-            placeholder="support@your-domain.com"
-            style={{
-              width: '100%',
-              padding: '9px 10px',
-              borderRadius: 10,
-              border: `1px solid ${borderSubtle}`,
-              background: inputBg,
-              color: textPrimary,
-              fontSize: 12,
-            }}
-          />
-          <div style={{ fontSize: 11, color: textSecondary }}>
-            Incoming emails to this address will be converted into tickets.
-          </div>
         </div>
       </div>
 
@@ -2494,7 +2471,8 @@ export default function TenantDashboardPage() {
   const [resetAgentInfo, setResetAgentInfo] = useState('');
 
   // Plan state
-  const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; max_products: number; price_usd: unknown; price_inr: unknown }>>([]);
+  const [plans, setPlans] = useState<Array<{ id: string; name: string; max_agents: number; max_tickets_per_month: number; max_products: number; price_usd: unknown; price_inr: unknown; is_free_trial?: boolean; trial_days?: number }>>([]);
+  const [trialStartedAt, setTrialStartedAt] = useState<string | null>(null);
   const [plansLoading, setPlansLoading] = useState(false);
   const [plansSaving, setPlansSaving] = useState(false);
   const [plansError, setPlansError] = useState('');
@@ -2519,6 +2497,23 @@ export default function TenantDashboardPage() {
   const [configProductId, setConfigProductId] = useState<string | null>(null);
   const [showAddAgentModal, setShowAddAgentModal] = useState(false);
   const [agentFilterProductId, setAgentFilterProductId] = useState<string | null>(null);
+
+  // Analytics summary
+  const [analyticsSummary, setAnalyticsSummary] = useState<{
+    total_tickets: number;
+    by_status: Record<string, number>;
+    by_priority: Record<string, number>;
+    sla_breached_count: number;
+    resolved_or_closed_count: number;
+    bot_replies_total: number;
+    agent_count: number;
+    kb_articles_count: number;
+    tickets_over_time: Array<{ date: string; count: number }>;
+    top_agents: Array<{ agent_id: string | null; name: string; ticket_count: number }>;
+    tickets_by_product: Array<{ name: string; count: number }>;
+    products_count: number;
+    active_products_count: number;
+  } | null>(null);
 
   const fetchConfigurationStatus = () => {
     setConfigStatusLoading(true);
@@ -2565,10 +2560,15 @@ export default function TenantDashboardPage() {
             max_products: typeof pl.max_products === 'number' ? pl.max_products : 0,
             price_usd: pl.price_usd,
             price_inr: pl.price_inr,
+            is_free_trial: pl.is_free_trial ?? false,
+            trial_days: pl.trial_days ?? 0,
           }))
         );
         const currentPlanId = state?.tenant?.plan_id || null;
         setSelectedPlanId(currentPlanId);
+        if (state?.tenant?.trial_started_at) {
+          setTrialStartedAt(state.tenant.trial_started_at);
+        }
         if (configStatus && typeof configStatus === 'object' && 'products' in configStatus) {
           setConfigurationStatus(configStatus as ConfigurationStatus);
         }
@@ -2598,22 +2598,34 @@ export default function TenantDashboardPage() {
     }
   }, [mounted, activeConfig]);
 
+  useEffect(() => {
+    if (!mounted) return;
+    analyticsApi.getSummary()
+      .then((res: any) => setAnalyticsSummary(res.data ?? null))
+      .catch(() => {});
+  }, [mounted]);
+
   if (!mounted) return null;
 
   const isDark = theme === 'dark';
 
-  const bgPrimary = isDark ? '#020617' : '#F3F4F6';
-  const bgSurface = isDark ? '#020617' : '#FFFFFF';
-  const bgSurfaceElevated = isDark ? '#020617' : '#FFFFFF';
-  const textPrimary = isDark ? '#E5E7EB' : '#020617';
-  const textSecondary = isDark ? '#9CA3AF' : '#4B5563';
-  const borderSubtle = isDark ? 'rgba(148, 163, 184, 0.35)' : '#E5E7EB';
-  const accentBrand = isDark ? '#0EA5E9' : '#2563EB';
-  const accentBrandSoft = isDark ? 'rgba(59, 130, 246, 0.18)' : '#DBEAFE';
-  const accentBrandBorder = isDark ? 'rgba(96, 165, 250, 0.7)' : '#93C5FD';
-  const accentChipBg = isDark ? 'rgba(34, 197, 94, 0.14)' : '#DCFCE7';
+  const bgPrimary      = isDark ? '#060D1F' : '#EFF6FF';
+  const bgSurface      = isDark ? 'rgba(15,23,42,0.85)'    : 'rgba(255,255,255,0.85)';
+  const bgSurfaceElevated = isDark ? 'rgba(15,23,42,0.9)' : 'rgba(255,255,255,0.9)';
+  const textPrimary    = isDark ? '#E5E7EB' : '#0F172A';
+  const textSecondary  = isDark ? '#94A3B8' : '#334155';
+  const borderSubtle   = isDark ? 'rgba(148,163,184,0.2)' : 'rgba(147,197,253,0.55)';
+  const accentBrand    = '#0EA5E9';
+  const accentIndigo   = '#6366F1';
+  const accentBrandSoft   = isDark ? 'rgba(14,165,233,0.15)' : 'rgba(219,234,254,0.7)';
+  const accentBrandBorder = isDark ? 'rgba(14,165,233,0.5)'  : 'rgba(147,197,253,0.8)';
+  const accentChipBg   = isDark ? 'rgba(34,197,94,0.14)' : '#DCFCE7';
   const accentChipText = isDark ? '#4ADE80' : '#166534';
-  const inputBg = isDark ? '#020617' : '#FFFFFF';
+  const inputBg        = isDark ? 'rgba(15,23,42,0.8)' : 'rgba(255,255,255,0.9)';
+  const gridColor      = isDark ? 'rgba(148,163,184,0.1)' : 'rgba(147,197,253,0.3)';
+  const axisColor      = isDark ? '#64748B' : '#94A3B8';
+  const ttStyle: React.CSSProperties = { background: isDark ? '#0f172a' : '#fff', border: `1px solid ${borderSubtle}`, borderRadius: 8, fontSize: 12, color: textPrimary };
+  const glassCard: React.CSSProperties = { background: bgSurface, border: `1px solid ${borderSubtle}`, borderRadius: 14, backdropFilter: 'blur(12px)' };
 
   const currentPlan = selectedPlanId ? plans.find((p) => p.id === selectedPlanId) : null;
   const agentCount = agents.filter((a: any) =>
@@ -2645,6 +2657,16 @@ export default function TenantDashboardPage() {
       window.location.href = '/login';
     }
   };
+
+  // Free trial state
+  const currentPlanData = selectedPlanId ? plans.find((p) => p.id === selectedPlanId) : null;
+  const isOnFreeTrial = !!currentPlanData?.is_free_trial;
+  const trialDaysTotal = currentPlanData?.trial_days ?? 14;
+  const trialDaysUsed = trialStartedAt
+    ? Math.floor((Date.now() - new Date(trialStartedAt).getTime()) / (1000 * 60 * 60 * 24))
+    : 0;
+  const trialDaysLeft = Math.max(0, trialDaysTotal - trialDaysUsed);
+  const trialExpired = isOnFreeTrial && trialDaysLeft === 0 && trialDaysUsed > 0;
 
   const statCard = (opts: {
     label: string;
@@ -2706,7 +2728,9 @@ export default function TenantDashboardPage() {
       style={{
         minHeight: '100vh',
         display: 'flex',
-        background: bgPrimary,
+        background: isDark
+          ? 'linear-gradient(135deg, #060D1F 0%, #0F172A 50%, #0C1A3A 100%)'
+          : 'linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 50%, #EEF2FF 100%)',
         color: textPrimary,
         fontFamily: 'system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif',
       }}
@@ -2720,7 +2744,8 @@ export default function TenantDashboardPage() {
           display: 'flex',
           flexDirection: 'column',
           gap: '24px',
-          background: isDark ? '#020617' : '#FFFFFF',
+          background: isDark ? 'rgba(6,13,31,0.95)' : 'rgba(255,255,255,0.95)',
+          backdropFilter: 'blur(16px)',
         }}
       >
         <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 6px 4px 4px', textDecoration: 'none', color: 'inherit' }}>
@@ -2763,25 +2788,29 @@ export default function TenantDashboardPage() {
           >
             Overview
           </span>
-          <Link
-            href="/admin/dashboard"
+          <button
+            type="button"
+            onClick={() => setActiveConfig('overview')}
             style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
+              width: '100%',
               padding: '9px 10px',
               borderRadius: '10px',
               textDecoration: 'none',
               color: textPrimary,
-              background: accentBrandSoft,
-              border: `1px solid ${accentBrandBorder}`,
+              background: activeConfig === 'overview' ? accentBrandSoft : 'transparent',
+              border: activeConfig === 'overview' ? `1px solid ${accentBrandBorder}` : '1px solid transparent',
               fontSize: 13,
               fontWeight: 600,
+              cursor: 'pointer',
+              textAlign: 'left',
             }}
           >
             <span>Tenant dashboard</span>
             <span style={{ fontSize: 11, color: textSecondary }}>Home</span>
-          </Link>
+          </button>
         </div>
 
         {/* Primary entities directly under dashboard */}
@@ -2841,7 +2870,6 @@ export default function TenantDashboardPage() {
             { key: 'ai-bot', label: 'L0 AI bot' },
             { key: 'sla', label: 'SLA configuration' },
             { key: 'escalation', label: 'Escalation rules' },
-            { key: 'ticket-settings', label: 'Ticket settings' },
             { key: 'channels', label: 'Support channels' },
             { key: 'branding', label: 'Branding & white-label' },
           ].map((item) => {
@@ -2870,6 +2898,25 @@ export default function TenantDashboardPage() {
         </div>
 
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Link
+            href="/agent/dashboard"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 10px',
+              borderRadius: '10px',
+              textDecoration: 'none',
+              color: textSecondary,
+              fontSize: 13,
+              border: `1px solid ${borderSubtle}`,
+              background: isDark ? '#020617' : '#F9FAFB',
+            }}
+          >
+            <span>Ticket inbox (handle escalations)</span>
+            <span style={{ fontSize: 11 }}>→</span>
+          </Link>
+
           <Link
             href="/admin/billing"
             style={{
@@ -2900,19 +2947,26 @@ export default function TenantDashboardPage() {
             }}
           >
             <span style={{ fontSize: 11, color: textSecondary }}>Plan</span>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>
-              {plans.find((p) => p.id === selectedPlanId)?.name || 'No plan selected'}
-            </span>
-            <span style={{ fontSize: 11, color: textSecondary }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>
+                {plans.find((p) => p.id === selectedPlanId)?.name || 'No plan selected'}
+              </span>
+              {isOnFreeTrial && (
+                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: 'linear-gradient(90deg,#0EA5E9,#6366F1)', color: '#fff' }}>
+                  TRIAL
+                </span>
+              )}
+            </div>
+            <span style={{ fontSize: 11, color: isOnFreeTrial && trialDaysLeft <= 3 ? '#EF4444' : textSecondary }}>
               {(() => {
                 const plan = plans.find((p) => p.id === selectedPlanId);
                 if (!plan) return 'Select a plan to unlock limits';
-                const agents =
-                  plan.max_agents === -1 ? 'Unlimited agents' : `${plan.max_agents} agents`;
-                const tickets =
-                  plan.max_tickets_per_month === -1
-                    ? 'unlimited tickets/mo'
-                    : `${plan.max_tickets_per_month.toLocaleString()} tickets/mo`;
+                if (plan.is_free_trial) {
+                  if (trialExpired) return '⚠️ Trial expired — upgrade now';
+                  return `${trialDaysLeft}d left · 1 product · 3 agents`;
+                }
+                const agents = plan.max_agents === -1 ? 'Unlimited agents' : `${plan.max_agents} agents`;
+                const tickets = plan.max_tickets_per_month === -1 ? 'unlimited tickets/mo' : `${plan.max_tickets_per_month.toLocaleString()} tickets/mo`;
                 return `${agents} • ${tickets}`;
               })()}
             </span>
@@ -3063,19 +3117,307 @@ export default function TenantDashboardPage() {
 
           {/* Main content: overview is cleared; config panels remain in sidebar */}
           {activeConfig === 'overview' ? (
-            <div style={{ padding: '24px 0' }}>
-              <h1 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px 0' }}>Tenant overview</h1>
-              <p style={{ fontSize: 13, color: textSecondary, margin: 0 }}>
-                Use the sidebar to configure products, agents, and settings.
-              </p>
+            <div style={{ padding: '4px 0 24px 0' }}>
+
+              {/* Free trial banner */}
+              {isOnFreeTrial && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '12px 18px', borderRadius: 12, marginBottom: 18,
+                  background: trialExpired
+                    ? 'linear-gradient(90deg,rgba(239,68,68,0.15),rgba(239,68,68,0.08))'
+                    : 'linear-gradient(90deg,rgba(14,165,233,0.15),rgba(99,102,241,0.1))',
+                  border: `1px solid ${trialExpired ? 'rgba(239,68,68,0.35)' : 'rgba(14,165,233,0.35)'}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 20 }}>{trialExpired ? '⚠️' : '🎁'}</span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary }}>
+                        {trialExpired ? 'Your free trial has ended' : `Free Trial — ${trialDaysLeft} day${trialDaysLeft !== 1 ? 's' : ''} remaining`}
+                      </div>
+                      <div style={{ fontSize: 11, color: textSecondary }}>
+                        {trialExpired
+                          ? 'Upgrade to a paid plan to continue using all features.'
+                          : `1 product · 3 agents · 100 tickets/mo · Trial ends in ${trialDaysLeft} day${trialDaysLeft !== 1 ? 's' : ''}`}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPlansModal(true)}
+                    style={{
+                      padding: '8px 16px', borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                      background: trialExpired ? '#EF4444' : 'linear-gradient(90deg,#0EA5E9,#6366F1)',
+                      color: '#fff', whiteSpace: 'nowrap', flexShrink: 0,
+                    }}
+                  >
+                    {trialExpired ? 'Choose a plan' : 'Upgrade now'}
+                  </button>
+                </div>
+              )}
+
+              {/* Welcome row */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 20 }}>
+                <div>
+                  <h1 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.03em', color: textPrimary, margin: '0 0 4px 0' }}>
+                    Welcome back, {displayName} 👋
+                  </h1>
+                  <p style={{ fontSize: 13, color: textSecondary, margin: 0 }}>
+                    {tenantName} · {currentPlan ? currentPlan.name + ' plan' : 'No plan selected'}
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button type="button" onClick={() => setActiveConfig('configuration-hub')} style={{ padding: '8px 14px', borderRadius: 9, border: `1px solid ${borderSubtle}`, background: accentBrandSoft, color: accentBrand, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    Setup checklist
+                  </button>
+                </div>
+              </div>
+
+              {/* Top stat cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14, marginBottom: 20 }}>
+                {[
+                  { icon: '🎫', label: 'Total Tickets',     value: analyticsSummary?.total_tickets           ?? products.length > 0 ? (analyticsSummary?.total_tickets ?? '—') : '—', color: accentBrand },
+                  { icon: '✅', label: 'Resolved',          value: analyticsSummary?.resolved_or_closed_count ?? '—', color: '#4ADE80' },
+                  { icon: '⚠️', label: 'SLA Breached',      value: analyticsSummary?.sla_breached_count       ?? '—', color: '#EF4444' },
+                  { icon: '🤖', label: 'Bot Replies',        value: analyticsSummary?.bot_replies_total        ?? '—', color: '#A78BFA' },
+                  { icon: '👥', label: 'Agents',             value: analyticsSummary?.agent_count ?? agentCount, color: accentIndigo },
+                  { icon: '📦', label: 'Products',           value: analyticsSummary?.products_count ?? products.length, color: '#F59E0B' },
+                  { icon: '📚', label: 'KB Articles',        value: analyticsSummary?.kb_articles_count ?? '—', color: '#0EA5E9' },
+                  { icon: '🗂️', label: 'Open Tickets',       value: analyticsSummary?.by_status?.['open'] ?? '—', color: '#6366F1' },
+                ].map(s => (
+                  <div key={s.label} style={{ ...glassCard, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span style={{ fontSize: 22 }}>{s.icon}</span>
+                    <div>
+                      <div style={{ fontSize: 10, color: textSecondary, fontWeight: 600, marginBottom: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{s.label}</div>
+                      <div style={{ fontSize: 22, fontWeight: 800, color: s.color, lineHeight: 1 }}>{String(s.value)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {analyticsSummary && (
+                <>
+                  {/* Row 1: Trend + Status pie */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, marginBottom: 16 }}>
+                    {/* Tickets over time */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>Ticket Volume (last 30 days)</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 12 }}>Created tickets per day</div>
+                      <ResponsiveContainer width="100%" height={180}>
+                        <AreaChart data={analyticsSummary.tickets_over_time.map(t => ({ date: t.date.slice(5), Tickets: t.count }))}>
+                          <defs>
+                            <linearGradient id="tGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor={accentBrand} stopOpacity={0.35} />
+                              <stop offset="95%" stopColor={accentBrand} stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                          <XAxis dataKey="date" tick={{ fontSize: 9, fill: axisColor }} axisLine={false} tickLine={false} />
+                          <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: axisColor }} axisLine={false} tickLine={false} />
+                          <Tooltip contentStyle={ttStyle} />
+                          <Area type="monotone" dataKey="Tickets" stroke={accentBrand} fill="url(#tGrad)" strokeWidth={2} dot={false} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* Status breakdown pie */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>By Status</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 8 }}>{analyticsSummary.total_tickets} tickets total</div>
+                      {(() => {
+                        const STATUS_COLORS: Record<string, string> = { new_ticket: '#0EA5E9', open: '#6366F1', in_progress: '#F59E0B', pending_user: '#F472B6', resolved: '#4ADE80', closed: '#94A3B8' };
+                        const data = Object.entries(analyticsSummary.by_status).map(([s, v]) => ({ name: s.replace('_', ' '), value: v, color: STATUS_COLORS[s] ?? '#94A3B8' }));
+                        return (
+                          <ResponsiveContainer width="100%" height={190}>
+                            <PieChart>
+                              <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="45%" innerRadius={44} outerRadius={70} paddingAngle={2}>
+                                {data.map((d, i) => <Cell key={i} fill={d.color} />)}
+                              </Pie>
+                              <Tooltip contentStyle={ttStyle} />
+                              <Legend iconType="circle" iconSize={7} wrapperStyle={{ fontSize: 10, color: textSecondary }} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Row 2: Priority bar + Agents + Product tickets */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 16 }}>
+                    {/* Priority */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>By Priority</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 12 }}>Ticket priority distribution</div>
+                      {(() => {
+                        const PC: Record<string, string> = { p1: '#EF4444', p2: '#F59E0B', p3: '#0EA5E9', p4: '#4ADE80' };
+                        const data = Object.entries(analyticsSummary.by_priority).sort(([a],[b])=>a.localeCompare(b)).map(([p, v]) => ({ name: p.toUpperCase(), Tickets: v, color: PC[p] ?? '#94A3B8' }));
+                        return (
+                          <ResponsiveContainer width="100%" height={160}>
+                            <BarChart data={data} barCategoryGap="30%">
+                              <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                              <XAxis dataKey="name" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} />
+                              <YAxis allowDecimals={false} tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} />
+                              <Tooltip contentStyle={ttStyle} />
+                              <Bar dataKey="Tickets" radius={[4,4,0,0]}>
+                                {data.map((d, i) => <Cell key={i} fill={d.color} />)}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Top agents */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>Top Agents</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 12 }}>By ticket assignment</div>
+                      {analyticsSummary.top_agents.length === 0 ? (
+                        <div style={{ fontSize: 12, color: textSecondary, paddingTop: 16 }}>No assignments yet.</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {analyticsSummary.top_agents.slice(0, 5).map((a, i) => (
+                            <div key={a.agent_id ?? i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <div style={{ width: 26, height: 26, borderRadius: 999, background: `linear-gradient(135deg, ${accentBrand}, ${accentIndigo})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                                {a.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
+                                <div style={{ height: 4, borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(147,197,253,0.2)', marginTop: 3, overflow: 'hidden' }}>
+                                  <div style={{ width: `${Math.round((a.ticket_count / (analyticsSummary.top_agents[0]?.ticket_count || 1)) * 100)}%`, height: '100%', background: `linear-gradient(90deg,${accentBrand},${accentIndigo})`, borderRadius: 999 }} />
+                                </div>
+                              </div>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: accentBrand, minWidth: 24, textAlign: 'right' }}>{a.ticket_count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Tickets by product */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>By Product</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 12 }}>Ticket volume per product</div>
+                      {analyticsSummary.tickets_by_product.length === 0 ? (
+                        <div style={{ fontSize: 12, color: textSecondary, paddingTop: 16 }}>No products yet.</div>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={160}>
+                          <BarChart layout="vertical" data={analyticsSummary.tickets_by_product.slice(0,6)} barCategoryGap="25%">
+                            <CartesianGrid strokeDasharray="3 3" stroke={gridColor} horizontal={false} />
+                            <XAxis type="number" allowDecimals={false} tick={{ fontSize: 9, fill: axisColor }} axisLine={false} tickLine={false} />
+                            <YAxis type="category" dataKey="name" width={70} tick={{ fontSize: 9, fill: axisColor }} axisLine={false} tickLine={false} />
+                            <Tooltip contentStyle={ttStyle} />
+                            <Bar dataKey="count" name="Tickets" fill={accentBrand} radius={[0,4,4,0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Row 3: SLA + AI deflection + Config status */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+                    {/* SLA gauge */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>SLA Health</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 16 }}>Tickets within SLA vs breached</div>
+                      {(() => {
+                        const total = analyticsSummary.total_tickets;
+                        const ok = total - analyticsSummary.sla_breached_count;
+                        const breachPct = total > 0 ? Math.round((analyticsSummary.sla_breached_count / total) * 100) : 0;
+                        return (
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                              <div style={{ flex: 1, height: 8, borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(147,197,253,0.2)', overflow: 'hidden' }}>
+                                <div style={{ width: `${100 - breachPct}%`, height: '100%', background: 'linear-gradient(90deg,#4ADE80,#0EA5E9)', borderRadius: 999 }} />
+                              </div>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: '#4ADE80' }}>{100 - breachPct}%</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
+                              <div><span style={{ color: '#4ADE80', fontWeight: 700 }}>{ok}</span><span style={{ color: textSecondary }}> within SLA</span></div>
+                              <div><span style={{ color: '#EF4444', fontWeight: 700 }}>{analyticsSummary.sla_breached_count}</span><span style={{ color: textSecondary }}> breached</span></div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* AI Deflection */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 2 }}>AI Deflection</div>
+                      <div style={{ fontSize: 11, color: textSecondary, marginBottom: 16 }}>Bot vs human interactions</div>
+                      {(() => {
+                        const total = analyticsSummary.total_tickets;
+                        const botPct = total > 0 && analyticsSummary.bot_replies_total > 0 ? Math.min(100, Math.round((analyticsSummary.bot_replies_total / (analyticsSummary.bot_replies_total + total)) * 100)) : 0;
+                        return (
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                              <div style={{ flex: 1, height: 8, borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(147,197,253,0.2)', overflow: 'hidden' }}>
+                                <div style={{ width: `${botPct}%`, height: '100%', background: 'linear-gradient(90deg,#A78BFA,#6366F1)', borderRadius: 999 }} />
+                              </div>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: '#A78BFA' }}>{botPct}%</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: 16, fontSize: 12 }}>
+                              <div><span style={{ color: '#A78BFA', fontWeight: 700 }}>{analyticsSummary.bot_replies_total}</span><span style={{ color: textSecondary }}> bot replies</span></div>
+                              <div><span style={{ color: accentBrand, fontWeight: 700 }}>{total}</span><span style={{ color: textSecondary }}> tickets</span></div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Quick config status */}
+                    <div style={{ ...glassCard, padding: '18px 20px' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: textPrimary, marginBottom: 12 }}>Setup Status</div>
+                      {configurationStatus ? (() => {
+                        const tenant = configurationStatus.tenant_level;
+                        const items = [
+                          { label: 'Support channels', done: tenant.channels },
+                          { label: 'Branding', done: tenant.branding },
+                          { label: 'Agents', done: configurationStatus.products?.some(p => p.configuration.agents) },
+                          { label: 'Knowledge base', done: configurationStatus.products?.some(p => p.configuration.kb) },
+                          { label: 'AI Bot', done: configurationStatus.products?.some(p => p.configuration.l0_bot) },
+                        ];
+                        const doneCount = items.filter(i => i.done).length;
+                        return (
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                              <div style={{ flex: 1, height: 6, borderRadius: 999, background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(147,197,253,0.2)', overflow: 'hidden' }}>
+                                <div style={{ width: `${Math.round((doneCount / items.length) * 100)}%`, height: '100%', background: 'linear-gradient(90deg,#0EA5E9,#6366F1)', borderRadius: 999 }} />
+                              </div>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: accentBrand }}>{doneCount}/{items.length}</span>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                              {items.map(item => (
+                                <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11 }}>
+                                  <span style={{ color: item.done ? '#4ADE80' : textSecondary, fontSize: 13 }}>{item.done ? '✓' : '○'}</span>
+                                  <span style={{ color: item.done ? textPrimary : textSecondary }}>{item.label}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        );
+                      })() : (
+                        <div style={{ fontSize: 12, color: textSecondary }}>Loading setup status…</div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Placeholder when no analytics data yet */}
+              {!analyticsSummary && (
+                <div style={{ ...glassCard, padding: '32px 24px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 32, marginBottom: 10 }}>📊</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: textPrimary, marginBottom: 6 }}>Loading insights…</div>
+                  <div style={{ fontSize: 12, color: textSecondary }}>Configure products and start handling tickets to see analytics here.</div>
+                </div>
+              )}
+
             </div>
           ) : (
             // Configuration detail panel, stays in dashboard theme
             <div
               style={{
-                borderRadius: '20px',
-                border: `1px solid ${borderSubtle}`,
-                background: bgSurface,
+                ...glassCard,
                 padding: '18px 20px',
                 marginTop: 4,
                 display: 'flex',
@@ -3121,12 +3463,11 @@ export default function TenantDashboardPage() {
                                   (cfg.escalation ? 1 : 0);
                                 const tenant = configurationStatus?.tenant_level;
                                 const globalDone =
-                                  (tenant?.ticket_settings ? 1 : 0) +
                                   (tenant?.channels ? 1 : 0) +
                                   (tenant?.branding ? 1 : 0);
-                                const totalSteps = 8;
+                                const totalSteps = 7;
                                 const totalDone = Math.min(totalSteps, globalDone + perProductDone);
-                                return `${tp.name} (${totalDone}/8 configured)`;
+                                return `${tp.name} (${totalDone}/7 configured)`;
                               })()}
                             </option>
                           ))}
@@ -3167,13 +3508,12 @@ export default function TenantDashboardPage() {
                                   (cfg.escalation ? 1 : 0);
                                 const tenant = configurationStatus?.tenant_level;
                                 const globalDone =
-                                  (tenant?.ticket_settings ? 1 : 0) +
                                   (tenant?.channels ? 1 : 0) +
                                   (tenant?.branding ? 1 : 0);
-                                const totalSteps = 8;
+                                const totalSteps = 7;
                                 const totalDone = Math.min(totalSteps, globalDone + perProductDone);
                                 const remaining = totalSteps - totalDone;
-                                return `${totalDone}/8 done${remaining > 0 ? ` · ${remaining} to go` : ''}`;
+                                return `${totalDone}/7 done${remaining > 0 ? ` · ${remaining} to go` : ''}`;
                               })()}
                             </div>
                           </button>
@@ -3263,21 +3603,6 @@ export default function TenantDashboardPage() {
                               </div>
                             </>
                           ) : null}
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
-                            <span style={{ fontSize: 13 }}>Ticket settings</span>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <span style={{ color: configurationStatus?.tenant_level?.ticket_settings ? (isDark ? '#4ADE80' : '#166534') : textSecondary, fontSize: 12 }}>
-                                {configurationStatus?.tenant_level?.ticket_settings ? 'Done' : 'Not done'}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setActiveConfig('ticket-settings')}
-                                style={{ fontSize: 12, color: accentBrand, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}
-                              >
-                                Open
-                              </button>
-                            </div>
-                          </div>
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: 8, background: isDark ? 'rgba(255,255,255,0.04)' : '#F3F4F6' }}>
                             <span style={{ fontSize: 13 }}>Support channels</span>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3461,7 +3786,9 @@ export default function TenantDashboardPage() {
                             {p.description || '—'}
                           </div>
                           <div style={{ color: textSecondary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {p.created_by_email || '—'}
+                            {p.created_by_email
+                              ? deriveNameFromEmail(p.created_by_email)
+                              : '—'}
                           </div>
                           <div style={{ textAlign: 'right' }}>
                             <span
@@ -3895,26 +4222,6 @@ export default function TenantDashboardPage() {
                     </div>
                   );
                 })()}
-              </>
-            )}
-
-            {activeConfig === 'ticket-settings' && (
-              <>
-                <div style={{ marginBottom: 4, fontSize: 13, color: accentBrand, fontWeight: 600 }}>Step 3</div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px 0' }}>Ticket Settings</h2>
-                <p style={{ fontSize: 13, color: textSecondary, margin: '0 0 18px 0' }}>
-                  Configure how tickets are created and assigned.
-                </p>
-
-                <TicketSettingsInline
-                  isDark={isDark}
-                  textPrimary={textPrimary}
-                  textSecondary={textSecondary}
-                  borderSubtle={borderSubtle}
-                  inputBg={inputBg}
-                  accentBrand={accentBrand}
-                  onNext={() => setActiveConfig('sla')}
-                />
               </>
             )}
 
@@ -5063,7 +5370,7 @@ export default function TenantDashboardPage() {
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 700 }}>Workspace plans</div>
                   <div style={{ fontSize: 12, color: textSecondary }}>
-                    Choose a plan below. Your current plan is highlighted. Click &quot;Select plan&quot; to switch.
+                    Start with a free trial or choose a paid plan. Current plan is highlighted.
                   </div>
                 </div>
                 <button
@@ -5106,80 +5413,86 @@ export default function TenantDashboardPage() {
                     gap: 12,
                   }}
                 >
-                  {plans.map((plan) => {
+                  {[...plans].sort((a, b) => (a.is_free_trial ? -1 : b.is_free_trial ? 1 : Number(a.price_usd) - Number(b.price_usd))).map((plan) => {
                     const isSelected = plan.id === selectedPlanId;
+                    const isTrial = !!plan.is_free_trial;
                     const price = Number(plan.price_usd);
-                    const isUnlimited =
-                      plan.max_agents === -1 || plan.max_tickets_per_month === -1;
+                    const isUnlimited = plan.max_agents === -1 || plan.max_tickets_per_month === -1;
                     return (
                       <div
                         key={plan.id}
                         style={{
                           borderRadius: 14,
                           border: isSelected
-                            ? `2px solid ${accentBrandBorder}`
+                            ? `2px solid ${isTrial ? 'rgba(14,165,233,0.6)' : accentBrandBorder}`
                             : `1px solid ${borderSubtle}`,
                           background: isSelected
-                            ? accentBrandSoft
-                            : isDark
-                            ? '#020617'
-                            : '#FFFFFF',
+                            ? (isTrial ? 'rgba(14,165,233,0.1)' : accentBrandSoft)
+                            : (isTrial ? (isDark ? 'rgba(14,165,233,0.06)' : 'rgba(219,234,254,0.4)') : (isDark ? 'rgba(15,23,42,0.6)' : '#FFFFFF')),
                           padding: 16,
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 8,
+                          position: 'relative',
                         }}
                       >
+                        {isTrial && (
+                          <div style={{ position: 'absolute', top: -1, right: 12, background: 'linear-gradient(90deg,#0EA5E9,#6366F1)', color: '#fff', fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: '0 0 8px 8px', letterSpacing: '0.05em' }}>
+                            FREE
+                          </div>
+                        )}
                         <div style={{ fontSize: 14, fontWeight: 700 }}>{plan.name}</div>
                         <div style={{ fontSize: 22, fontWeight: 800 }}>
-                          {isNaN(price) ? '—' : `$${price}`}{' '}
-                          <span
-                            style={{
-                              fontSize: 11,
-                              fontWeight: 500,
-                              color: textSecondary,
-                            }}
-                          >
-                            /mo
-                          </span>
+                          {isTrial ? (
+                            <span style={{ background: 'linear-gradient(90deg,#0EA5E9,#6366F1)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Free</span>
+                          ) : (
+                            <>{isNaN(price) ? '—' : `$${price}`}{' '}<span style={{ fontSize: 11, fontWeight: 500, color: textSecondary }}>/mo</span></>
+                          )}
                         </div>
-                        <ul
-                          style={{
-                            listStyle: 'none',
-                            margin: '4px 0 0',
-                            padding: 0,
-                            fontSize: 12,
-                            color: textSecondary,
-                          }}
-                        >
-                          <li>
-                            {isUnlimited
-                              ? 'Unlimited agents & tickets'
-                              : `${plan.max_agents === -1 ? 'Unlimited' : plan.max_agents} agents`}
-                          </li>
+                        <ul style={{ listStyle: 'none', margin: '4px 0 0', padding: 0, fontSize: 12, color: textSecondary, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          {isTrial && <li style={{ color: accentBrand, fontWeight: 600 }}>✓ {plan.trial_days || 14}-day free trial</li>}
+                          <li>✓ {plan.max_products === 1 ? '1 product' : plan.max_products > 1 ? `${plan.max_products} products` : 'Unlimited products'}</li>
+                          <li>✓ {isUnlimited ? 'Unlimited agents' : `${plan.max_agents} agents`}</li>
                           {plan.max_tickets_per_month !== -1 && (
-                            <li>
-                              {plan.max_tickets_per_month.toLocaleString()} tickets per month
-                            </li>
+                            <li>✓ {plan.max_tickets_per_month.toLocaleString()} tickets/mo</li>
                           )}
                         </ul>
                         {isSelected ? (
-                          <div
+                          <div style={{ marginTop: 'auto', fontSize: 11, fontWeight: 700, color: accentChipText, background: accentChipBg, borderRadius: 999, padding: '6px 10px', alignSelf: 'flex-start' }}>
+                            {isTrial && trialDaysLeft > 0 ? `Active · ${trialDaysLeft}d left` : 'Current plan'}
+                          </div>
+                        ) : isTrial && isOnFreeTrial ? (
+                          // Already used or still on free trial — show disabled state
+                          <div style={{ marginTop: 'auto', fontSize: 11, color: textSecondary, fontStyle: 'italic' }}>Already activated</div>
+                        ) : isTrial ? (
+                          // Free trial — no payment needed
+                          <button
+                            type="button"
+                            disabled={plansSaving}
+                            onClick={async () => {
+                              setPlansError('');
+                              setPlansSaving(true);
+                              try {
+                                const res = await billingApi.activateFreeTrial(plan.id);
+                                setSelectedPlanId(plan.id);
+                                setTrialStartedAt(res.data?.trial_started_at ?? new Date().toISOString());
+                                setShowPlansModal(false);
+                              } catch (err: any) {
+                                setPlansError(err?.response?.data?.error || err?.message || 'Failed to activate trial');
+                              } finally {
+                                setPlansSaving(false);
+                              }
+                            }}
                             style={{
-                              marginTop: 'auto',
-                              paddingTop: 8,
-                              fontSize: 11,
-                              fontWeight: 700,
-                              color: accentChipText,
-                              background: accentChipBg,
-                              borderRadius: 999,
-                              padding: '6px 10px',
-                              alignSelf: 'flex-start',
+                              marginTop: 'auto', width: '100%', padding: '9px 12px', borderRadius: 10, border: 'none',
+                              background: 'linear-gradient(90deg,#0EA5E9,#6366F1)', color: '#fff',
+                              fontSize: 13, fontWeight: 700, cursor: plansSaving ? 'not-allowed' : 'pointer', opacity: plansSaving ? 0.8 : 1,
                             }}
                           >
-                            Current plan
-                          </div>
+                            {plansSaving ? 'Activating…' : '🎁 Start Free Trial'}
+                          </button>
                         ) : (
+                          // Paid plan — Razorpay flow
                           <button
                             type="button"
                             disabled={plansSaving}
@@ -5189,11 +5502,8 @@ export default function TenantDashboardPage() {
                               try {
                                 const res = await billingApi.createOrder(plan.id);
                                 const { order_id, amount, currency, key_id } = res.data;
-
                                 const options = {
-                                  key: key_id,
-                                  amount,
-                                  currency,
+                                  key: key_id, amount, currency,
                                   name: 'GKT Ticketing',
                                   description: `Subscribe to ${plan.name}`,
                                   order_id,
@@ -5221,14 +5531,9 @@ export default function TenantDashboardPage() {
                                       setPlansSaving(false);
                                     }
                                   },
-                                  modal: {
-                                    ondismiss: () => {
-                                      setPlansSaving(false);
-                                    },
-                                  },
+                                  modal: { ondismiss: () => setPlansSaving(false) },
                                   theme: { color: accentBrand },
                                 };
-
                                 const RazorpayCheckout = (window as any).Razorpay;
                                 if (!RazorpayCheckout) {
                                   setPlansError('Payment gateway failed to load. Please refresh and try again.');
@@ -5236,33 +5541,20 @@ export default function TenantDashboardPage() {
                                   return;
                                 }
                                 const rzp = new RazorpayCheckout(options);
-                                rzp.on('payment.failed', (response: any) => {
-                                  setPlansError(response?.error?.description || 'Payment failed. Please try again.');
+                                rzp.on('payment.failed', (resp: any) => {
+                                  setPlansError(resp?.error?.description || 'Payment failed. Please try again.');
                                   setPlansSaving(false);
                                 });
                                 rzp.open();
                               } catch (err: any) {
-                                const msg =
-                                  err?.response?.data?.error ||
-                                  err?.message ||
-                                  'Failed to initiate payment';
-                                setPlansError(msg);
+                                setPlansError(err?.response?.data?.error || err?.message || 'Failed to initiate payment');
                                 setPlansSaving(false);
                               }
                             }}
                             style={{
-                              marginTop: 'auto',
-                              paddingTop: 8,
-                              width: '100%',
-                              padding: '8px 12px',
-                              borderRadius: 10,
-                              border: 'none',
-                              background: accentBrand,
-                              color: '#0B1120',
-                              fontSize: 13,
-                              fontWeight: 600,
-                              cursor: plansSaving ? 'not-allowed' : 'pointer',
-                              opacity: plansSaving ? 0.8 : 1,
+                              marginTop: 'auto', width: '100%', padding: '8px 12px', borderRadius: 10, border: 'none',
+                              background: accentBrand, color: '#fff', fontSize: 13, fontWeight: 600,
+                              cursor: plansSaving ? 'not-allowed' : 'pointer', opacity: plansSaving ? 0.8 : 1,
                             }}
                           >
                             {plansSaving ? 'Opening payment…' : 'Select plan'}

@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { prisma } from '../db/postgres';
 import { Conversation } from '../../mongo/models/conversation.model';
 import { getIO } from '../config/socket';
+import { decryptForDisplayWithBold } from '../utils/encrypt';
+import { parseTranscriptFromDescription } from '../utils/transcript';
 import { getActiveAdapter } from '../ai/provider';
 import { embedQuery, searchKb } from '../services/embedding.service';
 import { getResolutionTimeMins, computeSlaDeadline } from '../services/sla.service';
@@ -82,7 +84,7 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
       return;
     }
 
-    // Prefer Mongo Conversation as the single source of truth for the thread when available.
+    // Single source of truth: one Conversation doc holds full thread (L0 bot + user + agent messages after handoff).
     let fromMongo: any[] | null = null;
     if (ticket.tenant_product_id) {
       try {
@@ -90,13 +92,17 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
           { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'bot' },
         ).lean();
         if (convo && Array.isArray(convo.messages) && convo.messages.length > 0) {
-          fromMongo = convo.messages.map((m: any) => ({
-            id: m.message_id,
-            from: m.author_type === 'system' ? 'system' : m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
-            author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
-            text: m.body,
-            created_at: m.created_at ? new Date(m.created_at) : new Date(),
-          }));
+          fromMongo = convo.messages.map((m: any) => {
+            const { text, boldPrefix } = decryptForDisplayWithBold(m.body);
+            return {
+              id: m.message_id,
+              from: m.author_type === 'system' ? 'system' : m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
+              author_name: m.author_name && m.author_type === 'agent' ? m.author_name : undefined,
+              text,
+              ...(boldPrefix ? { bold_prefix: boldPrefix } : {}),
+              created_at: m.created_at ? new Date(m.created_at) : new Date(),
+            };
+          });
         }
       } catch (e) {
         console.warn('listTicketMessages: failed to load Conversation, falling back to comments:', (e as Error).message);
@@ -107,11 +113,11 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
       const sorted = fromMongo.sort(
         (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
       );
-      res.json({ messages: sorted });
+      res.json({ messages: sorted }); // Full conversation: L0 + all agent/user messages
       return;
     }
 
-    // Fallback: build a basic thread from ticket description + non-internal comments.
+    // Fallback: build thread from ticket description + non-internal comments.
     const comments = await prisma.ticketComment.findMany({
       where: { ticket_id: ticket.id },
       orderBy: { created_at: 'asc' },
@@ -124,35 +130,54 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
       },
     });
 
-    let baseText = ticket.description || ticket.subject;
-    if (baseText) {
-      const marker = '\n---\nChat transcript\n---';
-      const idx = baseText.indexOf(marker);
-      if (idx >= 0) {
-        baseText = baseText.slice(0, idx).trim();
-      }
-    }
-    const ticketStart = {
-      id: 'ticket-desc',
-      from: 'user' as const,
-      text: baseText || ticket.subject,
-      created_at: ticket.created_at,
-    };
+    const description = ticket.description || ticket.subject || '';
+    const parsedTranscript = parseTranscriptFromDescription(description);
 
-    const commentMessages = comments
-      .filter((c) => !c.is_internal)
-      .map((c) => ({
-        id: c.id,
-        from: c.is_bot ? ('bot' as const) : ('agent' as const),
-        text: c.body,
-        created_at: c.created_at,
+    let thread: Array<{ id: string; from: 'user' | 'bot' | 'agent'; text: string; created_at: Date }>;
+    if (parsedTranscript.length > 0) {
+      const transcriptMessages = parsedTranscript.map((m, i) => ({
+        id: `transcript-${i}`,
+        from: m.from as 'user' | 'bot',
+        text: m.text,
+        created_at: new Date(ticket.created_at.getTime() + i),
       }));
+      const commentMessages = comments
+        .filter((c) => !c.is_internal)
+        .map((c) => ({
+          id: String(c.id),
+          from: (c.is_bot ? 'bot' : 'agent') as 'user' | 'bot' | 'agent',
+          text: c.body,
+          created_at: c.created_at,
+        }));
+      thread = [...transcriptMessages, ...commentMessages].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      );
+    } else {
+      const ticketStart = {
+        id: 'ticket-desc',
+        from: 'user' as const,
+        text: description || ticket.subject,
+        created_at: ticket.created_at,
+      };
+      const commentMessages = comments
+        .filter((c) => !c.is_internal)
+        .map((c) => ({
+          id: String(c.id),
+          from: (c.is_bot ? 'bot' : 'agent') as 'user' | 'bot' | 'agent',
+          text: c.body,
+          created_at: c.created_at,
+        }));
+      thread = [ticketStart, ...commentMessages].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      );
+    }
 
-    const merged = [ticketStart, ...commentMessages].sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-    );
+    const withDecrypt = thread.map((m: any) => {
+      const { text, boldPrefix } = decryptForDisplayWithBold(m.text);
+      return { ...m, text, ...(boldPrefix ? { bold_prefix: boldPrefix } : {}) };
+    });
 
-    res.json({ messages: merged });
+    res.json({ messages: withDecrypt });
   } catch (e) {
     console.error('listTicketMessages error:', e);
     res.status(500).json({ error: 'Failed to list messages' });
@@ -525,7 +550,32 @@ export async function createTicketFromWidget(req: Request, res: Response): Promi
       return 'p3';
     })();
 
-    const effectiveTenantProductId = tenantProductId || null;
+    // Resolve tenant_product_id for routing/queues. If the hosted webform didn't pass it,
+    // fall back to tenant channel settings default product, then any active tenant product.
+    let effectiveTenantProductId = tenantProductId || null;
+    if (!effectiveTenantProductId && tenantId) {
+      try {
+        const settings = await prisma.tenantChannelSettings.findUnique({
+          where: { tenant_id: tenantId },
+          select: { default_product_id: true },
+        });
+        if (settings?.default_product_id) effectiveTenantProductId = settings.default_product_id;
+      } catch {
+        // ignore
+      }
+      if (!effectiveTenantProductId) {
+        try {
+          const firstTp = await prisma.tenantProduct.findFirst({
+            where: { tenant_id: tenantId, status: 'active' },
+            select: { id: true },
+            orderBy: { created_at: 'asc' },
+          });
+          if (firstTp?.id) effectiveTenantProductId = firstTp.id;
+        } catch {
+          // ignore
+        }
+      }
+    }
     let slaDeadline: Date | null = null;
     try {
       const resolutionMins = await getResolutionTimeMins(

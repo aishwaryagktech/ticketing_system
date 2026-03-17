@@ -142,6 +142,47 @@ export class BillingService {
     }));
   }
 
+  static async activateFreeTrial(tenantId: string, planId: string) {
+    const plan = await prisma.billingPlan.findUnique({ where: { id: planId } });
+    if (!plan) throw new Error('Plan not found');
+    if (!plan.is_free_trial) throw new Error('This plan requires payment');
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+      select: { product_id: true, plan_id: true },
+    });
+    if (!tenant) throw new Error('Tenant not found');
+
+    // Prevent activating free trial if already on a paid plan
+    if (tenant.plan_id) {
+      const currentPlan = await prisma.billingPlan.findUnique({ where: { id: tenant.plan_id } });
+      if (currentPlan && !currentPlan.is_free_trial) {
+        throw new Error('Already on a paid plan');
+      }
+    }
+
+    const now = new Date();
+    const trialEnd = new Date(now);
+    trialEnd.setDate(trialEnd.getDate() + (plan.trial_days || 14));
+
+    await prisma.tenant.update({
+      where: { id: tenantId },
+      data: {
+        plan_id: planId,
+        trial_started_at: now,
+        onboarding_step: 'plan_selected',
+      },
+    });
+
+    return {
+      plan_id: plan.id,
+      plan_name: plan.name,
+      trial_started_at: now.toISOString(),
+      trial_ends_at: trialEnd.toISOString(),
+      trial_days: plan.trial_days,
+    };
+  }
+
   static async getSubscription(tenantId: string) {
     const tenant = await prisma.tenant.findUnique({
       where: { id: tenantId },

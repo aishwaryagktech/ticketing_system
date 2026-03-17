@@ -260,7 +260,9 @@ export default function BillingPage() {
   if (!mounted) return null;
 
   const isDark = resolvedTheme === 'dark';
-  const bg = isDark ? '#020617' : '#F8FAFC';
+  const pageBg = isDark
+    ? 'linear-gradient(160deg, #020617 0%, #020617 35%, #020617 100%)'
+    : 'linear-gradient(160deg, #EFF6FF 0%, #DBEAFE 30%, #F8FAFC 60%, #F1F5F9 100%)';
   const surface = isDark ? '#0f172a' : '#ffffff';
   const textPrimary = isDark ? '#F1F5F9' : '#0F172A';
   const textSecondary = isDark ? '#94A3B8' : '#64748B';
@@ -272,6 +274,17 @@ export default function BillingPage() {
   const accentBrandBorder = isDark ? 'rgba(250,204,21,0.3)' : 'rgba(202,138,4,0.3)';
   const accentChipBg = isDark ? 'rgba(250,204,21,0.12)' : 'rgba(202,138,4,0.12)';
   const accentChipText = isDark ? '#FACC15' : '#92400E';
+
+  const cardBg = isDark ? 'rgba(15,23,42,0.96)' : '#FFFFFF';
+  const cardBorder = isDark ? 'rgba(148,163,184,0.38)' : 'rgba(148,163,184,0.35)';
+  const glassCard: React.CSSProperties = {
+    background: cardBg,
+    border: `1px solid ${cardBorder}`,
+    borderRadius: 18,
+    boxShadow: isDark
+      ? '0 26px 80px rgba(15,23,42,0.85)'
+      : '0 24px 70px rgba(15,23,42,0.12)',
+  };
 
   const sub = subscription?.subscription;
   const plan = subscription?.plan;
@@ -292,54 +305,73 @@ export default function BillingPage() {
       : 'rgba(239,68,68,0.12)';
 
   return (
-    <div style={{ minHeight: '100vh', background: bg, padding: '32px 28px', fontFamily: 'inherit' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
-        <Link
-          href="/admin/dashboard"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 13,
-            color: textSecondary,
-            textDecoration: 'none',
-            padding: '6px 10px',
-            borderRadius: 8,
-            border: `1px solid ${border}`,
-            background: surface,
-          }}
-        >
-          ← Dashboard
-        </Link>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: textPrimary, lineHeight: 1 }}>Billing &amp; Invoices</h1>
-          <p style={{ fontSize: 12, color: textSecondary, marginTop: 4 }}>
-            {(user as any)?.tenant_name || 'Your workspace'} · manage your subscription and download invoices
-          </p>
-        </div>
-      </div>
-
-      {error && (
-        <div style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 10, padding: '10px 14px', color: '#ef4444', fontSize: 13, marginBottom: 20 }}>
-          {error}
-        </div>
-      )}
-
-      {loading ? (
-        <div style={{ color: textSecondary, fontSize: 13, padding: 24 }}>Loading billing data…</div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 900 }}>
-
-          {/* Current Plan Card */}
-          <div
+    <div
+      style={{
+        minHeight: '100vh',
+        background: pageBg,
+        padding: '32px 16px 40px',
+        fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,"Inter",sans-serif',
+        color: textPrimary,
+      }}
+    >
+      <div style={{ maxWidth: 980, margin: '0 auto' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28 }}>
+          <Link
+            href="/admin/dashboard"
             style={{
-              background: surface,
-              border: `1px solid ${plan ? accentBorder : border}`,
-              borderRadius: 18,
-              padding: '24px 24px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              fontSize: 13,
+              color: textSecondary,
+              textDecoration: 'none',
+              padding: '6px 10px',
+              borderRadius: 999,
+              border: `1px solid ${border}`,
+              background: isDark ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.85)',
             }}
           >
+            ← Dashboard
+          </Link>
+          <div>
+            <h1 style={{ fontSize: 22, fontWeight: 800, color: textPrimary, lineHeight: 1.1, letterSpacing: '-0.03em' }}>
+              Billing &amp; Invoices
+            </h1>
+            <p style={{ fontSize: 12, color: textSecondary, marginTop: 4 }}>
+              {(user as any)?.tenant_name || 'Your workspace'} · manage your subscription and download invoices
+            </p>
+          </div>
+        </div>
+
+        {error && (
+          <div
+            style={{
+              background: 'rgba(239,68,68,0.10)',
+              border: '1px solid rgba(239,68,68,0.35)',
+              borderRadius: 12,
+              padding: '10px 14px',
+              color: '#fecaca',
+              fontSize: 13,
+              marginBottom: 20,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        {loading ? (
+          <div style={{ color: textSecondary, fontSize: 13, padding: 24 }}>Loading billing data…</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+            {/* Current Plan Card */}
+            <div
+              style={{
+                ...glassCard,
+                border: `1px solid ${plan ? accentBorder : cardBorder}`,
+                padding: '24px 24px',
+              }}
+            >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 16 }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <span style={{ fontSize: 11, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Current Plan</span>
@@ -457,10 +489,10 @@ export default function BillingPage() {
                 ))}
               </div>
             )}
-          </div>
+            </div>
 
-          {/* Invoice History */}
-          <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: 18, overflow: 'hidden' }}>
+            {/* Invoice History */}
+            <div style={{ ...glassCard, border: `1px solid ${border}`, overflow: 'hidden' }}>
             <div style={{ padding: '20px 24px', borderBottom: `1px solid ${border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div>
                 <h2 style={{ fontSize: 15, fontWeight: 700, color: textPrimary }}>Invoice History</h2>
@@ -610,9 +642,9 @@ export default function BillingPage() {
                 </table>
               </div>
             )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Plans Modal */}
       {showPlansModal && (
@@ -1043,6 +1075,7 @@ export default function BillingPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

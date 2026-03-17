@@ -15,6 +15,7 @@ router.get('/plans', auth, billingController.listPlans);
 router.use(auth);
 router.use(rbac('tenant_admin', 'super_admin'));
 router.get('/subscription', billingController.getSubscription);
+router.post('/activate-trial', billingController.activateFreeTrial);
 router.post('/subscribe', billingController.subscribe);
 router.post('/verify-payment', billingController.verifyPayment);
 router.patch('/subscription', billingController.updateSubscription);

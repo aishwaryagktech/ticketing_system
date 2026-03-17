@@ -6,4 +6,5 @@ export const agentApi = {
   update: (id: string, data: any) => apiClient.patch(`/api/agents/${id}`, data),
   deactivate: (id: string) => apiClient.patch(`/api/agents/${id}/deactivate`),
   myProducts: () => apiClient.get('/api/agents/me/products'),
+  getDashboardStats: () => apiClient.get('/api/agents/me/dashboard-stats'),
 };
