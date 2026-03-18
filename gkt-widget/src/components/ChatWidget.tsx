@@ -121,6 +121,7 @@ export function ChatWidget({ config }: Props) {
           sessionId,
           userId: config.userId,
           userEmail: config.userEmail,
+          appSessionId: config.appSessionId || null,
         });
         const reply = String((res as any)?.reply || '').trim();
         const sid = String((res as any)?.session_id || '') || sessionId;
@@ -147,8 +148,9 @@ export function ChatWidget({ config }: Props) {
         setIsThinking(false);
       }
     },
-    [addMessage, config.tenantId, config.productId, config.productName, config.userEmail, config.userId, config.userName, isThinking, sessionId, setSessionId],
+    [addMessage, config.tenantId, config.productId, config.productName, config.userEmail, config.userId, config.userName, config.appSessionId, isThinking, sessionId, setSessionId],
   );
+
 
   const handleQuickReply = useCallback(
     (value: string) => {

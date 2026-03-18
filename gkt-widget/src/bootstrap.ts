@@ -28,5 +28,6 @@ export function bootstrap(scriptTag: HTMLScriptElement): WidgetConfig | null {
     courseId: scriptTag.getAttribute('data-course-id') || undefined,
     courseName: scriptTag.getAttribute('data-course-name') || undefined,
     sessionId: scriptTag.getAttribute('data-session-id') || undefined,
+    appSessionId: scriptTag.getAttribute('data-app-session-id') || undefined,
   };
 }

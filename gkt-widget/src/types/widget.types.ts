@@ -10,4 +10,6 @@ export interface WidgetConfig {
   courseId?: string;
   courseName?: string;
   sessionId?: string;
+  appSessionId?: string; // FlowPay (or host app) session ID for log correlation
 }
+

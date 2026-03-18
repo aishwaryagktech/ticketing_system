@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FlowPay — Demo Fintech App</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --surface: #111827;
+    --surface2: #1a2236;
+    --border: #1e2d45;
+    --accent: #00e5ff;
+    --accent2: #7c3aed;
+    --green: #10b981;
+    --red: #ef4444;
+    --yellow: #f59e0b;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --font-display: 'Syne', sans-serif;
+    --font-body: 'DM Sans', sans-serif;
+    --font-mono: 'DM Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV ── */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 2rem;
+    background: rgba(10,14,26,.9);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo { font-family: var(--font-display); font-size: 1.4rem; font-weight: 800; color: var(--accent); letter-spacing: -1px; }
+  .logo span { color: var(--text); }
+  .nav-user { display: flex; align-items: center; gap: .75rem; font-size: .85rem; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, var(--accent2), var(--accent)); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .75rem; }
+
+  /* ── LAYOUT ── */
+  .app-grid {
+    display: grid;
+    grid-template-columns: 220px 1fr 320px;
+    min-height: calc(100vh - 57px);
+  }
+
+  /* ── SIDEBAR ── */
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 1.5rem 1rem;
+    display: flex; flex-direction: column; gap: .25rem;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: .6rem;
+    padding: .6rem .8rem; border-radius: 8px;
+    font-size: .875rem; font-weight: 500; cursor: pointer;
+    color: var(--muted); transition: all .15s;
+    border: 1px solid transparent;
+  }
+  .nav-item:hover { color: var(--text); background: var(--surface2); }
+  .nav-item.active { color: var(--accent); background: rgba(0,229,255,.08); border-color: rgba(0,229,255,.2); }
+  .nav-icon { font-size: 1.1rem; }
+  .nav-section { font-size: .7rem; color: var(--muted); padding: .75rem .8rem .25rem; letter-spacing: .08em; text-transform: uppercase; }
+
+  /* ── MAIN ── */
+  main { padding: 2rem; overflow-y: auto; }
+  h2 { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; margin-bottom: .25rem; }
+  .subtitle { color: var(--muted); font-size: .875rem; margin-bottom: 1.75rem; }
+
+  /* ── BALANCE CARD ── */
+  .balance-card {
+    background: linear-gradient(135deg, #0f1f3d 0%, #1a0533 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px; padding: 1.75rem;
+    position: relative; overflow: hidden; margin-bottom: 1.5rem;
+  }
+  .balance-card::before {
+    content: ''; position: absolute; top: -40px; right: -40px;
+    width: 200px; height: 200px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,229,255,.12) 0%, transparent 70%);
+  }
+  .balance-label { font-size: .8rem; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: .5rem; }
+  .balance-amount { font-family: var(--font-display); font-size: 2.6rem; font-weight: 800; letter-spacing: -2px; }
+  .balance-currency { font-size: 1rem; color: var(--muted); vertical-align: super; font-weight: 400; }
+  .balance-meta { display: flex; gap: 1.5rem; margin-top: 1rem; }
+  .balance-meta-item { font-size: .8rem; }
+  .balance-meta-item label { color: var(--muted); display: block; margin-bottom: .15rem; }
+
+  /* ── QUICK ACTIONS ── */
+  .quick-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin-bottom: 1.5rem; }
+  .action-btn {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1rem .75rem;
+    display: flex; flex-direction: column; align-items: center; gap: .5rem;
+    cursor: pointer; transition: all .2s; font-size: .8rem; color: var(--muted);
+    font-family: var(--font-body);
+  }
+  .action-btn:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-2px); }
+  .action-btn .icon { font-size: 1.5rem; }
+
+  /* ── TRANSACTIONS ── */
+  .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+  .section-title { font-family: var(--font-display); font-size: 1rem; font-weight: 700; }
+  .see-all { font-size: .8rem; color: var(--accent); cursor: pointer; }
+  .tx-list { display: flex; flex-direction: column; gap: .5rem; }
+  .tx-item {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: .875rem 1rem;
+    display: flex; align-items: center; gap: .875rem;
+    transition: border-color .15s; cursor: default;
+  }
+  .tx-item:hover { border-color: var(--border); }
+  .tx-icon { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0; }
+  .tx-info { flex: 1; }
+  .tx-name { font-size: .875rem; font-weight: 500; }
+  .tx-date { font-size: .75rem; color: var(--muted); margin-top: .1rem; }
+  .tx-amount { font-family: var(--font-mono); font-size: .9rem; font-weight: 500; }
+  .tx-amount.credit { color: var(--green); }
+  .tx-amount.debit { color: var(--text); }
+
+  /* ── ISSUES PANEL (RIGHT) ── */
+  .issues-panel {
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .issues-header {
+    padding: 1.25rem 1.25rem .75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .issues-header h3 { font-family: var(--font-display); font-size: 1rem; font-weight: 700; margin-bottom: .25rem; }
+  .issues-header p { font-size: .75rem; color: var(--muted); }
+  .issues-list { flex: 1; overflow-y: auto; padding: .75rem; display: flex; flex-direction: column; gap: .5rem; }
+  .issue-card {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: .875rem;
+    cursor: pointer; transition: all .2s;
+  }
+  .issue-card:hover { border-color: var(--yellow); transform: translateX(-2px); }
+  .issue-card.triggered { border-color: var(--red); background: rgba(239,68,68,.05); }
+  .issue-tag {
+    display: inline-block; font-size: .65rem; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; padding: .2rem .5rem; border-radius: 4px; margin-bottom: .5rem;
+  }
+  .tag-payment { background: rgba(239,68,68,.15); color: var(--red); }
+  .tag-auth { background: rgba(124,58,237,.15); color: #a78bfa; }
+  .tag-sync { background: rgba(245,158,11,.15); color: var(--yellow); }
+  .tag-network { background: rgba(0,229,255,.1); color: var(--accent); }
+  .tag-account { background: rgba(16,185,129,.15); color: var(--green); }
+  .issue-title { font-size: .825rem; font-weight: 600; margin-bottom: .25rem; }
+  .issue-desc { font-size: .75rem; color: var(--muted); line-height: 1.4; }
+  .issue-trigger {
+    margin-top: .6rem; font-size: .72rem; font-weight: 600;
+    color: var(--yellow); display: flex; align-items: center; gap: .3rem;
+  }
+
+  /* ── LOG CONSOLE ── */
+  .log-section {
+    border-top: 1px solid var(--border);
+    background: #070b14;
+  }
+  .log-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .6rem 1rem; border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .log-header-left { display: flex; align-items: center; gap: .5rem; font-family: var(--font-mono); font-size: .75rem; color: var(--accent); }
+  .log-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .log-actions { display: flex; gap: .5rem; }
+  .log-btn {
+    font-size: .7rem; padding: .2rem .55rem; border-radius: 5px; cursor: pointer;
+    font-family: var(--font-mono); border: 1px solid var(--border); background: transparent; color: var(--muted);
+    transition: all .15s;
+  }
+  .log-btn:hover { color: var(--text); border-color: var(--muted); }
+  .log-btn.primary { border-color: var(--accent); color: var(--accent); }
+  .log-btn.primary:hover { background: rgba(0,229,255,.1); }
+  .log-output {
+    padding: .75rem 1rem; height: 200px; overflow-y: auto;
+    font-family: var(--font-mono); font-size: .72rem; line-height: 1.7;
+  }
+  .log-line { display: flex; gap: .75rem; }
+  .log-time { color: var(--muted); flex-shrink: 0; }
+  .log-level { flex-shrink: 0; font-weight: 600; min-width: 50px; }
+  .log-level.info { color: var(--accent); }
+  .log-level.warn { color: var(--yellow); }
+  .log-level.error { color: var(--red); }
+  .log-level.success { color: var(--green); }
+  .log-msg { color: #94a3b8; word-break: break-all; }
+  .log-empty { color: var(--muted); font-style: italic; font-size: .75rem; padding: 1rem; text-align: center; }
+
+  /* ── TOAST ── */
+  .toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 999; display: flex; flex-direction: column; gap: .5rem; }
+  .toast {
+    padding: .75rem 1.1rem; border-radius: 10px; font-size: .825rem;
+    display: flex; align-items: center; gap: .6rem; max-width: 320px;
+    animation: slideIn .3s ease; font-family: var(--font-body);
+    border: 1px solid; backdrop-filter: blur(12px);
+  }
+  .toast.error { background: rgba(239,68,68,.15); border-color: rgba(239,68,68,.4); color: #fca5a5; }
+  .toast.warn { background: rgba(245,158,11,.12); border-color: rgba(245,158,11,.35); color: #fcd34d; }
+  .toast.success { background: rgba(16,185,129,.12); border-color: rgba(16,185,129,.35); color: #6ee7b7; }
+  @keyframes slideIn { from { transform: translateX(100%); opacity:0 } to { transform: translateX(0); opacity:1 } }
+
+  /* ── MODAL ── */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+    padding: 2rem; max-width: 480px; width: 90%; animation: modalIn .2s ease;
+  }
+  @keyframes modalIn { from { transform: scale(.95); opacity:0 } to { transform: scale(1); opacity:1 } }
+  .modal h3 { font-family: var(--font-display); font-size: 1.2rem; font-weight: 700; margin-bottom: .5rem; }
+  .modal p { font-size: .875rem; color: var(--muted); line-height: 1.6; margin-bottom: 1.25rem; }
+  .modal-actions { display: flex; gap: .75rem; justify-content: flex-end; }
+  .btn { padding: .55rem 1.2rem; border-radius: 8px; font-size: .85rem; font-weight: 600; cursor: pointer; font-family: var(--font-body); border: 1px solid transparent; transition: all .15s; }
+  .btn-ghost { background: transparent; border-color: var(--border); color: var(--muted); }
+  .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+  .btn-primary { background: var(--accent); color: #000; }
+  .btn-primary:hover { opacity: .85; }
+  .error-screen {
+    background: rgba(239,68,68,.05); border: 1px solid rgba(239,68,68,.3);
+    border-radius: 12px; padding: 2rem; text-align: center; margin: 1.5rem 0;
+  }
+  .error-code { font-family: var(--font-mono); font-size: 2rem; font-weight: 700; color: var(--red); margin-bottom: .5rem; }
+  .error-msg { font-size: .875rem; color: var(--muted); }
+
+  /* ── PLUGIN SLOT ── */
+  .plugin-slot {
+    margin: 1.5rem; padding: 1rem; border: 1px dashed var(--border);
+    border-radius: 10px; background: rgba(0,229,255,.02);
+  }
+  .plugin-slot-label { font-size: .7rem; color: var(--muted); font-family: var(--font-mono); margin-bottom: .75rem; letter-spacing: .06em; }
+  .plugin-tab {
+    font-size: .75rem; font-family: var(--font-mono); font-weight: 600;
+    padding: .35rem .75rem; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--muted);
+    transition: all .15s;
+  }
+  .plugin-tab:hover { color: var(--text); border-color: var(--muted); }
+  .plugin-tab.active { background: rgba(0,229,255,.1); border-color: var(--accent); color: var(--accent); }
+  .plugin-textarea {
+    width: 100%; height: 80px; background: #070b14; border: 1px solid var(--border);
+    border-radius: 8px; color: var(--accent); font-family: var(--font-mono); font-size: .72rem;
+    padding: .6rem .75rem; resize: vertical; outline: none; transition: border-color .15s;
+    line-height: 1.6;
+  }
+  .plugin-textarea:focus { border-color: var(--accent); }
+  .plugin-textarea::placeholder { color: var(--muted); opacity: .6; }
+  .inject-btn {
+    font-size: .75rem; font-family: var(--font-mono); font-weight: 600;
+    padding: .35rem .9rem; border-radius: 6px; cursor: pointer;
+    background: rgba(0,229,255,.12); border: 1px solid var(--accent); color: var(--accent);
+    transition: all .15s;
+  }
+  .inject-btn:hover { background: rgba(0,229,255,.22); }
+  .clear-btn {
+    font-size: .75rem; font-family: var(--font-mono);
+    padding: .35rem .75rem; border-radius: 6px; cursor: pointer;
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    transition: all .15s;
+  }
+  .clear-btn:hover { border-color: var(--red); color: var(--red); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="logo">Flow<span>Pay</span></div>
+  <div class="nav-user">
+    <div>
+      <div style="font-weight:600;font-size:.875rem">Alex Rivera</div>
+      <div style="color:var(--muted);font-size:.75rem">Premium · ID #48291</div>
+    </div>
+    <div class="avatar">AR</div>
+  </div>
+</nav>
+
+<!-- MAIN GRID -->
+<div class="app-grid">
+
+  <!-- SIDEBAR -->
+  <aside>
+    <div class="nav-section">Menu</div>
+    <div class="nav-item active"><span class="nav-icon">🏠</span> Dashboard</div>
+    <div class="nav-item"><span class="nav-icon">💳</span> Cards</div>
+    <div class="nav-item"><span class="nav-icon">↗️</span> Send Money</div>
+    <div class="nav-item"><span class="nav-icon">↙️</span> Receive</div>
+    <div class="nav-item"><span class="nav-icon">📊</span> Analytics</div>
+    <div class="nav-section">Account</div>
+    <div class="nav-item"><span class="nav-icon">🔒</span> Security</div>
+    <div class="nav-item"><span class="nav-icon">⚙️</span> Settings</div>
+    <div class="nav-item"><span class="nav-icon">🔔</span> Notifications</div>
+    <div style="flex:1"></div>
+    <div class="nav-section">Integrations</div>
+    <div class="nav-item" id="nav-plugin"><span class="nav-icon">🔌</span> Support Widget</div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main id="mainContent">
+    <h2>Good morning, Alex 👋</h2>
+    <p class="subtitle">Here's your financial overview for today</p>
+
+    <!-- BALANCE CARD -->
+    <div class="balance-card">
+      <div class="balance-label">Total Balance</div>
+      <div class="balance-amount"><span class="balance-currency">$</span><span id="balanceAmt">12,480.55</span></div>
+      <div class="balance-meta">
+        <div class="balance-meta-item">
+          <label>This Month In</label>
+          <span style="color:var(--green);font-weight:600">+$3,200.00</span>
+        </div>
+        <div class="balance-meta-item">
+          <label>This Month Out</label>
+          <span style="color:var(--red);font-weight:600">-$1,847.23</span>
+        </div>
+        <div class="balance-meta-item">
+          <label>Last Sync</label>
+          <span id="lastSync">Just now</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- QUICK ACTIONS -->
+    <div class="quick-actions">
+      <div class="action-btn" data-issue="payment_failed"><span class="icon">💸</span> Send</div>
+      <div class="action-btn" data-issue="card_declined"><span class="icon">💳</span> Pay</div>
+      <div class="action-btn" data-issue="sync_stuck"><span class="icon">🔄</span> Sync</div>
+      <div class="action-btn" data-issue="balance_mismatch"><span class="icon">📈</span> Invest</div>
+    </div>
+
+    <!-- TRANSACTIONS -->
+    <div class="section-header">
+      <div class="section-title">Recent Transactions</div>
+      <div class="see-all">View all →</div>
+    </div>
+    <div class="tx-list" id="txList">
+      <div class="tx-item">
+        <div class="tx-icon" style="background:rgba(16,185,129,.12)">🏪</div>
+        <div class="tx-info"><div class="tx-name">Whole Foods Market</div><div class="tx-date">Today, 10:22 AM</div></div>
+        <div class="tx-amount debit">-$67.40</div>
+      </div>
+      <div class="tx-item">
+        <div class="tx-icon" style="background:rgba(0,229,255,.08)">💼</div>
+        <div class="tx-info"><div class="tx-name">Salary Deposit</div><div class="tx-date">Yesterday, 9:00 AM</div></div>
+        <div class="tx-amount credit">+$3,200.00</div>
+      </div>
+      <div class="tx-item">
+        <div class="tx-icon" style="background:rgba(124,58,237,.12)">🎵</div>
+        <div class="tx-info"><div class="tx-name">Spotify Premium</div><div class="tx-date">Mar 15, 12:01 AM</div></div>
+        <div class="tx-amount debit">-$9.99</div>
+      </div>
+      <div class="tx-item">
+        <div class="tx-icon" style="background:rgba(245,158,11,.1)">⚡</div>
+        <div class="tx-info"><div class="tx-name">Electric Bill</div><div class="tx-date">Mar 14, 3:44 PM</div></div>
+        <div class="tx-amount debit">-$112.80</div>
+      </div>
+      <div class="tx-item">
+        <div class="tx-icon" style="background:rgba(239,68,68,.1)">🚗</div>
+        <div class="tx-info"><div class="tx-name">Uber</div><div class="tx-date">Mar 13, 7:30 PM</div></div>
+        <div class="tx-amount debit">-$18.50</div>
+      </div>
+    </div>
+
+    <!-- PLUGIN SLOT — Dynamic UI -->
+    <div class="plugin-slot" id="pluginSlot" style="margin-top:2rem">
+      <div class="plugin-slot-label">⚙ PLUGIN SLOT — Paste &amp; Inject</div>
+
+      <!-- LOG CONTEXT BANNER -->
+      <div id="logContextBanner" style="display:none;background:rgba(0,229,255,.07);border:1px solid rgba(0,229,255,.25);border-radius:8px;padding:.65rem 1rem;margin-bottom:.875rem;font-size:.78rem;align-items:center;gap:.6rem;">
+        <span style="color:var(--accent);font-size:1rem">📋</span>
+        <span style="color:#94d8e4;font-family:var(--font-mono)">
+          <strong id="logContextCount">0</strong> log entries ready —
+          <span style="color:var(--muted)">widget reads via <code>window.FlowPayLogs</code></span>
+        </span>
+      </div>
+
+      <!-- TABS -->
+      <div style="display:flex;gap:.5rem;margin-bottom:.875rem;">
+        <button class="plugin-tab active" id="tab-script" data-tab="script">📜 Script Tag</button>
+        <button class="plugin-tab" id="tab-iframe" data-tab="iframe">🖼 iFrame</button>
+        <button class="plugin-tab" id="tab-both" data-tab="both">⚡ Both</button>
+      </div>
+
+      <!-- SCRIPT INPUT -->
+      <div id="panel-script" class="plugin-panel">
+        <div style="font-size:.72rem;color:var(--muted);font-family:var(--font-mono);margin-bottom:.4rem">Paste your &lt;script&gt; tag below:</div>
+        <textarea id="input-script" class="plugin-textarea" placeholder='<script src="http://localhost:3000/widget.js" data-tenant="..." data-product="..."></script>'></textarea>
+        <div style="display:flex;gap:.5rem;margin-top:.5rem">
+          <button class="inject-btn" id="btn-inject-script" data-inject="script">▶ Inject Script</button>
+          <button class="clear-btn" id="btn-clear-script" data-clear="script">✕ Clear</button>
+        </div>
+      </div>
+
+      <!-- IFRAME INPUT -->
+      <div id="panel-iframe" class="plugin-panel" style="display:none">
+        <div style="font-size:.72rem;color:var(--muted);font-family:var(--font-mono);margin-bottom:.4rem">Paste your &lt;iframe&gt; tag below:</div>
+        <textarea id="input-iframe" class="plugin-textarea" placeholder='<iframe src="http://localhost:3000/support?tenant_id=..." width="100%" height="650" style="border:none;border-radius:16px"></iframe>'></textarea>
+        <div style="display:flex;gap:.5rem;margin-top:.5rem">
+          <button class="inject-btn" id="btn-inject-iframe" data-inject="iframe">▶ Inject iFrame</button>
+          <button class="clear-btn" id="btn-clear-iframe" data-clear="iframe">✕ Clear</button>
+        </div>
+      </div>
+
+      <!-- BOTH INPUT -->
+      <div id="panel-both" class="plugin-panel" style="display:none">
+        <div style="font-size:.72rem;color:var(--muted);font-family:var(--font-mono);margin-bottom:.4rem">Paste both tags (script first, then iframe):</div>
+        <textarea id="input-both" class="plugin-textarea" style="height:120px" placeholder='<script src="..."></script>&#10;<iframe src="..."></iframe>'></textarea>
+        <div style="display:flex;gap:.5rem;margin-top:.5rem">
+          <button class="inject-btn" id="btn-inject-both" data-inject="both">▶ Inject Both</button>
+          <button class="clear-btn" id="btn-clear-both" data-clear="both">✕ Clear</button>
+        </div>
+      </div>
+
+      <!-- STATUS -->
+      <div id="pluginStatus" style="font-size:.72rem;font-family:var(--font-mono);margin-top:.5rem;min-height:1.2rem"></div>
+
+      <!-- RENDER OUTPUT -->
+      <div id="pluginRender" style="margin-top:.75rem"></div>
+    </div>
+  </main>
+
+  <!-- RIGHT PANEL: ISSUES + LOGS -->
+  <div class="issues-panel">
+    <div class="issues-header">
+      <h3>🐛 Simulate Issues</h3>
+      <p>Click any issue to trigger it & generate logs</p>
+    </div>
+    <div class="issues-list" id="issuesList">
+
+      <div class="issue-card" id="issue_payment_failed" data-issue="payment_failed">
+        <div><span class="issue-tag tag-payment">Payment</span></div>
+        <div class="issue-title">Payment Transfer Failed</div>
+        <div class="issue-desc">User initiates a $500 transfer. Backend throws a timeout error at the payment gateway. Transaction stuck in PENDING.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_card_declined" data-issue="card_declined">
+        <div><span class="issue-tag tag-payment">Payment</span></div>
+        <div class="issue-title">Card Payment Declined</div>
+        <div class="issue-desc">Debit card charge fails with error code INSUFFICIENT_FUNDS even though account has enough balance. Card processor desync.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_login_loop" data-issue="login_loop">
+        <div><span class="issue-tag tag-auth">Auth</span></div>
+        <div class="issue-title">Login Redirect Loop</div>
+        <div class="issue-desc">User gets stuck in auth loop. Token refresh fails silently. Session invalidated but frontend cache still holds stale JWT.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_2fa_broken" data-issue="2fa_broken">
+        <div><span class="issue-tag tag-auth">Auth</span></div>
+        <div class="issue-title">2FA OTP Not Arriving</div>
+        <div class="issue-desc">SMS OTP never delivered. SMS gateway returns 200 OK but carrier drops the message. User locked out of account.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_sync_stuck" data-issue="sync_stuck">
+        <div><span class="issue-tag tag-sync">Sync</span></div>
+        <div class="issue-title">Account Sync Stuck</div>
+        <div class="issue-desc">Balance sync job triggered but never completes. Worker thread deadlocked at DB transaction on table `account_balances`.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_balance_mismatch" data-issue="balance_mismatch">
+        <div><span class="issue-tag tag-sync">Sync</span></div>
+        <div class="issue-title">Balance Mismatch</div>
+        <div class="issue-desc">App shows $12,480 but actual bank balance is $11,900. Stale cache entry not invalidated after last transaction.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_api_timeout" data-issue="api_timeout">
+        <div><span class="issue-tag tag-network">Network</span></div>
+        <div class="issue-title">API Request Timeout</div>
+        <div class="issue-desc">Dashboard fails to load transaction history. Backend API /v2/transactions returns 504 Gateway Timeout after 30s.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_kyc_stuck" data-issue="kyc_stuck">
+        <div><span class="issue-tag tag-account">Account</span></div>
+        <div class="issue-title">KYC Verification Stuck</div>
+        <div class="issue-desc">Document upload completed but KYC status stays PENDING. Third-party Onfido webhook never received. User can't send money.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+      <div class="issue-card" id="issue_notif_flood" data-issue="notif_flood">
+        <div><span class="issue-tag tag-account">Account</span></div>
+        <div class="issue-title">Duplicate Notifications</div>
+        <div class="issue-desc">User receives the same push notification 12 times for a single transaction. Event emitter loop in notification service.</div>
+        <div class="issue-trigger">▶ Click to trigger</div>
+      </div>
+
+    </div>
+
+    <!-- LOG CONSOLE -->
+    <div class="log-section">
+      <div class="log-header">
+        <div class="log-header-left">
+          <div class="log-dot"></div>
+          SYSTEM LOGS
+        </div>
+        <div class="log-actions">
+          <button class="log-btn" id="btn-clear-logs">Clear</button>
+          <button class="log-btn primary" id="btn-export-logs">⬇ Export JSON</button>
+        </div>
+      </div>
+      <div class="log-output" id="logOutput">
+        <div class="log-empty">No logs yet. Trigger an issue to generate logs.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+// ─── LOG ENGINE ───────────────────────────────────────────────
+const logs = [];
+let logSeq = 0;
+
+// ── GLOBAL: accessible by widget.js and any script on this page
+window.FlowPayLogs = logs;
+window.FlowPaySession = {
+  user_id: 'usr_48291',
+  user_email: 'alex.rivera@flowpay.com',
+  session_id: 'sess_' + Math.random().toString(36).slice(2,10),
+  app: 'FlowPay',
+  app_version: '2.4.1',
+  tenant: '405eb281-be55-4609-b261-c81a6c585a10',
+  product: 'fbf60251-dadd-47c7-8590-15ac2d6a91b1',
+  getLogs: () => logs,
+  getSnapshot: () => buildSnapshot()
+};
+
+function buildSnapshot() {
+  return {
+    ...window.FlowPaySession,
+    exported_at: new Date().toISOString(),
+    log_count: logs.length,
+    error_count: logs.filter(l => l.level === 'error').length,
+    triggered_issues: logs.filter(l => l.message.startsWith('--- Issue triggered')).map(l => l.message),
+    logs
+  };
+}
+
+function addLog(level, message) {
+  const now = new Date();
+  const time = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3,'0');
+  const entry = { seq: ++logSeq, time, level, message, ts: now.toISOString() };
+  logs.push(entry);
+
+  // Update visible console
+  const el = document.getElementById('logOutput');
+  const empty = el.querySelector('.log-empty');
+  if (empty) empty.remove();
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-time">${time}</span><span class="log-level ${level}">[${level.toUpperCase()}]</span><span class="log-msg">${message}</span>`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+
+  // Update log count banner
+  updateLogBanner();
+
+  // Dispatch custom event — widget.js can listen to this
+  window.dispatchEvent(new CustomEvent('flowpay:log', { detail: entry }));
+}
+
+function updateLogBanner() {
+  const banner = document.getElementById('logContextBanner');
+  const count = document.getElementById('logContextCount');
+  if (banner && count) {
+    banner.style.display = 'flex';
+    count.textContent = logs.length;
+  }
+}
+
+function pushLogsToIframe() {
+  // postMessage to iframe so the support form can pre-fill context
+  const iframe = document.getElementById('supportIframe');
+  if (iframe && iframe.contentWindow) {
+    try {
+      iframe.contentWindow.postMessage({
+        type: 'FLOWPAY_LOGS',
+        source: 'flowpay-app',
+        payload: buildSnapshot()
+      }, '*');
+    } catch(e) { /* cross-origin — iframe must opt in via message listener */ }
+  }
+}
+
+function clearLogs() {
+  logs.length = 0; logSeq = 0;
+  document.getElementById('logOutput').innerHTML = '<div class="log-empty">Logs cleared.</div>';
+  const banner = document.getElementById('logContextBanner');
+  if (banner) banner.style.display = 'none';
+}
+
+function downloadLogs() {
+  const blob = new Blob([JSON.stringify(buildSnapshot(), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `flowpay-logs-${Date.now()}.json`; a.click();
+}
+
+// ─── TOAST ENGINE ─────────────────────────────────────────────
+function showToast(type, msg) {
+  const tc = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  const icon = type === 'error' ? '❌' : type === 'warn' ? '⚠️' : '✅';
+  t.className = `toast ${type}`;
+  t.innerHTML = `<span>${icon}</span><span>${msg}</span>`;
+  tc.appendChild(t);
+  setTimeout(() => t.remove(), 4500);
+}
+
+// ─── ISSUE DEFINITIONS ────────────────────────────────────────
+const issueScripts = {
+
+  payment_failed: async () => {
+    addLog('info',  'User initiated transfer: $500.00 → IBAN DE89370400440532013000');
+    addLog('info',  'POST /v2/payments/transfer — request_id: txn_7f3a91c2');
+    addLog('info',  'Connecting to payment gateway: Stripe Connect EU');
+    await delay(400);
+    addLog('warn',  'Gateway response delayed >5000ms, retrying (1/3)...');
+    await delay(300);
+    addLog('warn',  'Gateway response delayed >5000ms, retrying (2/3)...');
+    await delay(300);
+    addLog('error', 'GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2');
+    addLog('error', 'Payment stuck in PENDING state — txn_7f3a91c2');
+    addLog('warn',  'Rollback NOT triggered — idempotency key preserved');
+    addLog('error', 'ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed');
+    showToast('error', 'Transfer failed! Your $500 is stuck in PENDING.');
+    markIssue('payment_failed');
+    showModal('Payment Transfer Failed', 'ERROR PAY_5031: Gateway timeout after 3 retries. Your $500 deduction is logged but transfer was not confirmed. Ticket raised. Our agent is reading your logs now.');
+  },
+
+  card_declined: async () => {
+    addLog('info',  'Card payment initiated: $89.99 at merchant NETFLIX_COM');
+    addLog('info',  'Card token: tok_visa_4242 — sending to card processor');
+    await delay(300);
+    addLog('info',  'Processor response received: DECLINE — reason: INSUFFICIENT_FUNDS');
+    addLog('warn',  'Balance check: account_balance=$12480.55, card_processor_cached_balance=$0.00');
+    addLog('error', 'CACHE DESYNC: Card processor holding stale balance snapshot from 2025-03-10');
+    addLog('error', 'ERROR_CODE: CARD_4401 — Processor cache not refreshed in 7 days');
+    addLog('info',  'Suggested fix: Force-refresh card processor balance cache for user usr_48291');
+    showToast('error', 'Card declined! CARD_4401 — balance desync detected.');
+    markIssue('card_declined');
+    showModal('Card Declined — CARD_4401', 'Your card was declined due to a stale balance cache in our card processor. Your actual balance is $12,480. Logs forwarded to agent for cache refresh.');
+  },
+
+  login_loop: async () => {
+    addLog('info',  'Auth flow initiated — user: alex.rivera@flowpay.com');
+    addLog('info',  'JWT access token expired — attempting silent refresh');
+    await delay(250);
+    addLog('warn',  'Refresh token POST /auth/refresh → 401 Unauthorized');
+    addLog('error', 'Refresh token invalid or revoked — session_id: sess_9d4e1');
+    addLog('warn',  'Redirecting to /login...');
+    await delay(200);
+    addLog('warn',  'Frontend cache still holding stale JWT — re-injecting into headers');
+    addLog('error', 'Auth loop detected: redirect count=6 in 2s — breaking loop');
+    addLog('error', 'ERROR_CODE: AUTH_1102 — Token desync between frontend cache and auth server');
+    showToast('error', 'Login loop detected! AUTH_1102');
+    markIssue('login_loop');
+    showModal('Login Loop — AUTH_1102', 'You got stuck in an authentication loop. Your session token expired but the app cached a stale version. Logs captured. Fix: clear session cache and re-authenticate.');
+  },
+
+  '2fa_broken': async () => {
+    addLog('info',  'OTP request for user: +91-9876543210');
+    addLog('info',  'POST /auth/otp/send — provider: Twilio SMS');
+    await delay(300);
+    addLog('info',  'Twilio API response: 200 OK — message_sid: SM9f3a2c1');
+    addLog('warn',  'Delivery receipt not received after 30s');
+    await delay(400);
+    addLog('warn',  'Checking carrier status... CARRIER_DROP detected on Airtel India');
+    addLog('error', 'OTP not delivered — carrier_error: FILTERED_SPAM');
+    addLog('error', 'ERROR_CODE: SMS_3301 — Message blocked by carrier spam filter');
+    addLog('info',  'Fallback: voice OTP not configured for this account');
+    addLog('error', 'User locked out — 3 failed OTP attempts recorded');
+    showToast('error', 'OTP not delivered! SMS_3301 — carrier block.');
+    markIssue('2fa_broken');
+    showModal('2FA OTP Failure — SMS_3301', 'Your OTP was sent but blocked by your carrier spam filter (Airtel India). Message SID: SM9f3a2c1 confirmed sent. Agent will manually verify and unlock your account.');
+  },
+
+  sync_stuck: async () => {
+    addLog('info',  'Balance sync job triggered — job_id: sync_cc8f1');
+    addLog('info',  'Connecting to core banking API...');
+    await delay(300);
+    addLog('info',  'Core banking API: connected — fetching ledger entries');
+    addLog('info',  'Writing to DB: BEGIN TRANSACTION on table account_balances');
+    await delay(400);
+    addLog('warn',  'LOCK WAIT TIMEOUT — waiting for row lock on account_id=48291');
+    await delay(500);
+    addLog('error', 'DEADLOCK DETECTED: job sync_cc8f1 waiting on job sync_bb2d9 (orphaned)');
+    addLog('error', 'ERROR_CODE: SYNC_2201 — DB transaction deadlock, sync halted');
+    addLog('warn',  'Sync job marked FAILED — balance NOT updated');
+    document.getElementById('lastSync').textContent = '⚠️ Sync failed';
+    showToast('warn', 'Sync failed! SYNC_2201 — DB deadlock.');
+    markIssue('sync_stuck');
+    showModal('Sync Stuck — SYNC_2201', 'Your balance sync failed due to a database deadlock. An orphaned sync job (sync_bb2d9) is holding the lock. Agent has the details to release it manually.');
+  },
+
+  balance_mismatch: async () => {
+    addLog('info',  'Balance display request — user: usr_48291');
+    addLog('info',  'Cache lookup: CACHE HIT — returning cached value $12,480.55');
+    addLog('warn',  'Cache entry age: 8h 22m — TTL exceeded (max: 6h)');
+    addLog('info',  'Live balance from core banking: $11,900.00');
+    addLog('error', 'BALANCE MISMATCH: cached=$12,480.55, live=$11,900.00 — delta=$580.55');
+    addLog('error', 'ERROR_CODE: CACHE_1050 — Stale cache served to user, tx_id txn_0032 not reflected');
+    addLog('warn',  'Cache invalidation hook failed silently after last debit transaction');
+    document.getElementById('balanceAmt').textContent = '⚠️ --,---.--';
+    showToast('warn', 'Balance mismatch! Showing stale data.');
+    markIssue('balance_mismatch');
+    showModal('Balance Mismatch — CACHE_1050', 'Your app is showing a stale balance of $12,480 but your real balance is $11,900. The cache invalidation hook silently failed after your last transaction. Agent will flush and resync.');
+  },
+
+  api_timeout: async () => {
+    addLog('info',  'Dashboard load — fetching transaction history');
+    addLog('info',  'GET /v2/transactions?user_id=48291&limit=50');
+    await delay(300);
+    addLog('warn',  'Response time: 5000ms — approaching timeout threshold');
+    await delay(300);
+    addLog('warn',  'Response time: 15000ms — no data received');
+    await delay(200);
+    addLog('error', '504 GATEWAY TIMEOUT — upstream service /v2/transactions unresponsive');
+    addLog('error', 'ERROR_CODE: API_7701 — Possible DB query bottleneck on unindexed column `tx_date`');
+    addLog('info',  'Retry scheduled in 60s — user shown stale cached tx list');
+    showToast('error', 'Transactions failed to load! API_7701');
+    markIssue('api_timeout');
+    showModal('API Timeout — API_7701', 'Transaction history failed to load (504 timeout). Likely cause: missing index on tx_date column causing a full table scan. Agent has log details for the DB team.');
+  },
+
+  kyc_stuck: async () => {
+    addLog('info',  'KYC verification — user: usr_48291 — doc_id: kyc_d9f2');
+    addLog('info',  'Document uploaded to S3: s3://flowpay-kyc/48291/passport.jpg');
+    addLog('info',  'Onfido API check created — check_id: chk_Xr9a1');
+    await delay(400);
+    addLog('warn',  'Onfido webhook expected within 60s — not received');
+    await delay(300);
+    addLog('error', 'Webhook endpoint /webhooks/onfido returned no events for check_id: chk_Xr9a1');
+    addLog('error', 'ERROR_CODE: KYC_6601 — Onfido webhook URL misconfigured in dashboard (points to staging)');
+    addLog('warn',  'KYC status stuck at PENDING — user send_money feature blocked');
+    showToast('warn', 'KYC stuck! KYC_6601 — webhook misconfigured.');
+    markIssue('kyc_stuck');
+    showModal('KYC Verification Stuck — KYC_6601', 'Your KYC documents were uploaded and sent to Onfido, but we never received the callback. The webhook is pointing to our staging server instead of production. Agent is escalating to fix the config.');
+  },
+
+  notif_flood: async () => {
+    addLog('info',  'Push notification triggered for txn_0099 — debit $67.40');
+    for (let i = 1; i <= 12; i++) {
+      addLog(i <= 3 ? 'info' : i <= 6 ? 'warn' : 'error',
+        `Notification emitted (${i}/12) — event_id: evt_notif_0099 — push_token: tok_fcm_ar291`);
+      await delay(80);
+    }
+    addLog('error', 'ERROR_CODE: NOTIF_8801 — EventEmitter loop: listener not removed after first emit');
+    addLog('error', 'removeListener() not called on notificationService.on("transaction_complete")');
+    addLog('warn',  'Rate limiter should have blocked after 3 — rate_limit_check was bypassed (bug #4421)');
+    showToast('error', 'Notification flood! NOTIF_8801 — 12 duplicates sent.');
+    markIssue('notif_flood');
+    showModal('Duplicate Notifications — NOTIF_8801', 'You received 12 identical push notifications for a single transaction. An event listener was not cleaned up properly, causing a loop. Bug #4421. Agent has full event trace.');
+  },
+};
+
+// ─── HELPERS ──────────────────────────────────────────────────
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function triggerIssue(id) {
+  addLog('info', `--- Issue triggered by user: ${id} @ ${new Date().toISOString()} ---`);
+  if (issueScripts[id]) await issueScripts[id]();
+  // After issue runs: push logs to iframe + fire global event for widget.js
+  pushLogsToIframe();
+  window.dispatchEvent(new CustomEvent('flowpay:issue_triggered', {
+    detail: { issue_id: id, snapshot: buildSnapshot() }
+  }));
+}
+
+function markIssue(id) {
+  const card = document.getElementById('issue_' + id);
+  if (card) {
+    card.classList.add('triggered');
+    card.querySelector('.issue-trigger').innerHTML = '🔴 Triggered — logs generated';
+  }
+}
+
+let activeModal = null;
+function showModal(title, msg) {
+  if (activeModal) activeModal.remove();
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `
+    <div class="modal">
+      <h3>⚠️ ${title}</h3>
+      <p>${msg}</p>
+      <div style="background:rgba(0,229,255,.05);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;font-size:.78rem;color:var(--muted);font-family:var(--font-mono)">
+        Logs have been written to the console below.<br>
+        Your support ticket widget (plugin slot) will have full access to these logs.
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="this.closest('.modal-bg').remove()">Dismiss</button>
+        <button class="btn btn-primary" onclick="document.getElementById('pluginSlot').scrollIntoView({behavior:'smooth'});this.closest('.modal-bg').remove()">Open Support Widget ↓</button>
+      </div>
+    </div>`;
+  document.body.appendChild(bg);
+  activeModal = bg;
+}
+
+function showPluginInfo() {
+  showModal('Support Widget Plugin Slot', 'Scroll to the bottom of the main panel to find the plugin slot. Paste your &lt;script&gt; tag or &lt;iframe&gt; embed code inside the dashed box. The widget will appear inline.');
+}
+
+// ─── PLUGIN SLOT UI ───────────────────────────────────────────
+function switchTab(tab) {
+  ['script','iframe','both'].forEach(t => {
+    document.getElementById('panel-' + t).style.display = t === tab ? 'block' : 'none';
+    document.getElementById('tab-' + t).classList.toggle('active', t === tab);
+  });
+}
+
+function setStatus(msg, color) {
+  const el = document.getElementById('pluginStatus');
+  el.textContent = msg;
+  el.style.color = color || 'var(--muted)';
+}
+
+function injectCode(type) {
+  const render = document.getElementById('pluginRender');
+  const inputId = 'input-' + type;
+  const raw = document.getElementById(inputId).value.trim();
+  if (!raw) { setStatus('⚠ Nothing to inject — paste your code first.', 'var(--yellow)'); return; }
+
+  // Clear previous render
+  render.innerHTML = '';
+  setStatus('⏳ Injecting...', 'var(--accent)');
+
+  try {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = raw;
+
+    // Handle <script> tags manually (innerHTML doesn't execute them)
+    const scripts = tmp.querySelectorAll('script');
+    scripts.forEach(oldScript => {
+      const newScript = document.createElement('script');
+      [...oldScript.attributes].forEach(a => newScript.setAttribute(a.name, a.value));
+      if (oldScript.innerHTML) newScript.innerHTML = oldScript.innerHTML;
+      newScript.onerror = () => setStatus('⚠ Script failed to load — is your server running?', 'var(--yellow)');
+      newScript.onload = () => setStatus('✅ Script loaded — window.FlowPayLogs is available to widget.js', 'var(--green)');
+      render.appendChild(newScript);
+      oldScript.remove();
+    });
+
+    // Handle <iframe> and everything else
+    [...tmp.childNodes].forEach(node => render.appendChild(node.cloneNode(true)));
+
+    // After inject: push current logs into any iframe just rendered
+    setTimeout(() => {
+      const iframes = render.querySelectorAll('iframe');
+      iframes.forEach(f => {
+        try {
+          f.addEventListener('load', () => {
+            f.contentWindow.postMessage({ type: 'FLOWPAY_LOGS', source: 'flowpay-app', payload: buildSnapshot() }, '*');
+          });
+        } catch(e) {}
+      });
+    }, 500);
+
+    if (!tmp.querySelector('script')) {
+      setStatus('✅ Injected successfully', 'var(--green)');
+    }
+
+  } catch(e) {
+    setStatus('❌ Injection failed: ' + e.message, 'var(--red)');
+  }
+}
+
+function clearSlot(type) {
+  document.getElementById('input-' + type).value = '';
+  document.getElementById('pluginRender').innerHTML = '';
+  setStatus('Cleared.', 'var(--muted)');
+}
+
+// ─── WIRE ALL EVENTS via DOMContentLoaded ─────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+
+  // Startup logs
+  addLog('info', 'FlowPay app initialized — v2.4.1');
+  addLog('info', 'User session started — user_id: usr_48291');
+  addLog('info', 'Dashboard loaded — fetching balance & transactions');
+  addLog('success', 'All services nominal — ready');
+
+  // Issue cards (right panel + quick actions)
+  document.querySelectorAll('[data-issue]').forEach(el => {
+    el.addEventListener('click', () => triggerIssue(el.dataset.issue));
+  });
+
+  // Log console buttons
+  document.getElementById('btn-clear-logs').addEventListener('click', clearLogs);
+  document.getElementById('btn-export-logs').addEventListener('click', downloadLogs);
+
+  // Sidebar plugin nav
+  document.getElementById('nav-plugin').addEventListener('click', showPluginInfo);
+
+  // Plugin tabs
+  document.querySelectorAll('[data-tab]').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // Inject buttons
+  document.querySelectorAll('[data-inject]').forEach(btn => {
+    btn.addEventListener('click', () => injectCode(btn.dataset.inject));
+  });
+
+  // Clear slot buttons
+  document.querySelectorAll('[data-clear]').forEach(btn => {
+    btn.addEventListener('click', () => clearSlot(btn.dataset.clear));
+  });
+
+});
+
+</script>
+</body>
+</html>

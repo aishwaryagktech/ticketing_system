@@ -653,7 +653,7 @@ export async function publicSupportSuggest(req: ApiKeyRequest, res: Response): P
 }
 
 // PATCH /api/tickets/:id/assign
-// Priority-based assignment: P1 → only L3 agents; P2/P3/P4 → only L1 agents. Admins can always assign.
+// Priority-based assignment: P1 → only L3 agents; P2/P3/P4 → L1/L2/L3 agents. Admins can always assign.
 // Role comes from JWT (mapped from role_id -> roles.name: l1_agent, l2_agent, l3_agent, tenant_admin).
 export async function assignTicket(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
@@ -675,6 +675,7 @@ export async function assignTicket(req: AuthRequest, res: Response): Promise<voi
     const priority = String(existing.priority || 'p2').toLowerCase();
     const isP1 = priority === 'p1';
     const isL1 = role === 'l1_agent';
+    const isL2 = role === 'l2_agent';
     const isL3 = role === 'l3_agent';
     const isAdmin = role === 'tenant_admin' || role === 'super_admin';
 
@@ -686,9 +687,12 @@ export async function assignTicket(req: AuthRequest, res: Response): Promise<voi
         return;
       }
     } else {
-      if (!isL1 && !isAdmin) {
+      if (!isL1 && !isL2 && !isL3 && !isAdmin) {
         res.status(403).json({
-          error: 'Non-P1 tickets can only be assigned to L1 agents. This ticket has priority ' + priority.toUpperCase() + '.',
+          error:
+            'Non-P1 tickets can only be assigned to L1/L2/L3 agents. This ticket has priority ' +
+            priority.toUpperCase() +
+            '.',
         });
         return;
       }

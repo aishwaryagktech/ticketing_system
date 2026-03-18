@@ -1,0 +1,180 @@
+[22:58:02.256] [INFO   ] FlowPay app initialized — v2.4.1
+[22:58:02.262] [INFO   ] User session started — user_id: usr_48291
+[22:58:02.275] [INFO   ] Dashboard loaded — fetching balance & transactions
+[22:58:02.278] [SUCCESS] All services nominal — ready
+[2026-03-17T17:28:10.181Z] [ACTION ] USER_ACTION | action=issue_triggered | label=payment_failed | user=usr_48291 | session=sess_oyqgd2pq | page=dashboard | component=issue-panel
+[22:58:10.182] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-17T17:28:10.182Z ---
+[22:58:10.187] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[22:58:10.192] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[22:58:10.194] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[22:58:10.604] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[22:58:10.917] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[22:58:11.228] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[22:58:11.232] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[22:58:11.235] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[22:58:11.240] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+
+────────────────────────────────────────────────────────────
+SESSION  : sess_oyqgd2pq
+USER     : usr_48291 (alex.rivera@flowpay.com)
+ISSUE    : --- Issue triggered by user: payment_failed @ 2026-03-17T17:28:10.182Z ---
+ERRORS   : 3
+EXPORTED : 2026-03-17T17:28:11.247Z
+────────────────────────────────────────────────────────────
+[22:58:02.256] [INFO   ] FlowPay app initialized — v2.4.1
+[22:58:02.262] [INFO   ] User session started — user_id: usr_48291
+[22:58:02.275] [INFO   ] Dashboard loaded — fetching balance & transactions
+[22:58:02.278] [SUCCESS] All services nominal — ready
+[22:58:10.182] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-17T17:28:10.182Z ---
+[22:58:10.187] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[22:58:10.192] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[22:58:10.194] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[22:58:10.604] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[22:58:10.917] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[22:58:11.228] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[22:58:11.232] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[22:58:11.235] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[22:58:11.240] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+────────────────────────────────────────────────────────────
+
+[2026-03-17T17:28:23.976Z] [ACTION ] USER_ACTION | action=plugin_inject | label=script | user=usr_48291 | session=sess_oyqgd2pq | page=dashboard | component=plugin-slot
+[23:27:17.972] [INFO   ] FlowPay app initialized — v2.4.1
+[23:27:17.975] [INFO   ] User session started — user_id: usr_48291
+[23:27:17.986] [INFO   ] Dashboard loaded — fetching balance & transactions
+[23:27:17.989] [SUCCESS] All services nominal — ready
+[2026-03-17T17:57:28.586Z] [ACTION ] USER_ACTION | action=plugin_inject | label=script | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=plugin-slot
+[2026-03-17T17:57:32.043Z] [ACTION ] USER_ACTION | action=issue_triggered | label=payment_failed | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=issue-panel
+[23:27:32.043] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---
+[23:27:32.045] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[23:27:32.047] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[23:27:32.049] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[23:27:32.464] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[23:27:32.780] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[23:27:33.089] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[23:27:33.092] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[23:27:33.094] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[23:27:33.098] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+
+────────────────────────────────────────────────────────────
+SESSION  : sess_fgvjgvyu
+USER     : usr_48291 (alex.rivera@flowpay.com)
+ISSUE    : --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---
+ERRORS   : 3
+EXPORTED : 2026-03-17T17:57:33.102Z
+────────────────────────────────────────────────────────────
+[23:27:17.972] [INFO   ] FlowPay app initialized — v2.4.1
+[23:27:17.975] [INFO   ] User session started — user_id: usr_48291
+[23:27:17.986] [INFO   ] Dashboard loaded — fetching balance & transactions
+[23:27:17.989] [SUCCESS] All services nominal — ready
+[23:27:32.043] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---
+[23:27:32.045] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[23:27:32.047] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[23:27:32.049] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[23:27:32.464] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[23:27:32.780] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[23:27:33.089] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[23:27:33.092] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[23:27:33.094] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[23:27:33.098] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+────────────────────────────────────────────────────────────
+
+[2026-03-17T17:57:43.669Z] [ACTION ] USER_ACTION | action=tab_switch | label=iframe | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=plugin-slot
+[2026-03-17T17:57:45.629Z] [ACTION ] USER_ACTION | action=tab_switch | label=script | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=plugin-slot
+[2026-03-17T17:57:46.644Z] [ACTION ] USER_ACTION | action=tab_switch | label=both | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=plugin-slot
+[2026-03-17T17:57:48.179Z] [ACTION ] USER_ACTION | action=tab_switch | label=script | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=plugin-slot
+[2026-03-18T04:54:53.718Z] [ACTION ] USER_ACTION | action=issue_triggered | label=payment_failed | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=issue-panel
+[10:24:53.720] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-18T04:54:53.720Z ---
+[10:24:53.723] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[10:24:53.726] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[10:24:53.728] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[10:24:54.136] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[10:24:54.447] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[10:24:54.756] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[10:24:54.760] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[10:24:54.763] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[10:24:54.766] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+
+────────────────────────────────────────────────────────────
+SESSION  : sess_fgvjgvyu
+USER     : usr_48291 (alex.rivera@flowpay.com)
+ISSUE    : --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---, --- Issue triggered by user: payment_failed @ 2026-03-18T04:54:53.720Z ---
+ERRORS   : 6
+EXPORTED : 2026-03-18T04:54:54.774Z
+────────────────────────────────────────────────────────────
+[23:27:17.972] [INFO   ] FlowPay app initialized — v2.4.1
+[23:27:17.975] [INFO   ] User session started — user_id: usr_48291
+[23:27:17.986] [INFO   ] Dashboard loaded — fetching balance & transactions
+[23:27:17.989] [SUCCESS] All services nominal — ready
+[23:27:32.043] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---
+[23:27:32.045] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[23:27:32.047] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[23:27:32.049] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[23:27:32.464] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[23:27:32.780] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[23:27:33.089] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[23:27:33.092] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[23:27:33.094] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[23:27:33.098] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+[10:24:53.720] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-18T04:54:53.720Z ---
+[10:24:53.723] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[10:24:53.726] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[10:24:53.728] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[10:24:54.136] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[10:24:54.447] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[10:24:54.756] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[10:24:54.760] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[10:24:54.763] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[10:24:54.766] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+────────────────────────────────────────────────────────────
+
+[2026-03-18T04:57:44.434Z] [ACTION ] USER_ACTION | action=issue_triggered | label=card_declined | user=usr_48291 | session=sess_fgvjgvyu | page=dashboard | component=issue-panel
+[10:27:44.434] [INFO   ] --- Issue triggered by user: card_declined @ 2026-03-18T04:57:44.434Z ---
+[10:27:44.437] [INFO   ] Card payment initiated: $89.99 at merchant NETFLIX_COM
+[10:27:44.439] [INFO   ] Card token: tok_visa_4242 — sending to card processor
+[10:27:44.751] [INFO   ] Processor response received: DECLINE — reason: INSUFFICIENT_FUNDS
+[10:27:44.754] [WARN   ] Balance check: account_balance=$12480.55, card_processor_cached_balance=$0.00
+[10:27:44.757] [ERROR  ] CACHE DESYNC: Card processor holding stale balance snapshot from 2025-03-10
+[10:27:44.762] [ERROR  ] ERROR_CODE: CARD_4401 — Processor cache not refreshed in 7 days
+[10:27:44.765] [INFO   ] Suggested fix: Force-refresh card processor balance cache for user usr_48291
+
+────────────────────────────────────────────────────────────
+SESSION  : sess_fgvjgvyu
+USER     : usr_48291 (alex.rivera@flowpay.com)
+ISSUE    : --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---, --- Issue triggered by user: payment_failed @ 2026-03-18T04:54:53.720Z ---, --- Issue triggered by user: card_declined @ 2026-03-18T04:57:44.434Z ---
+ERRORS   : 8
+EXPORTED : 2026-03-18T04:57:44.770Z
+────────────────────────────────────────────────────────────
+[23:27:17.972] [INFO   ] FlowPay app initialized — v2.4.1
+[23:27:17.975] [INFO   ] User session started — user_id: usr_48291
+[23:27:17.986] [INFO   ] Dashboard loaded — fetching balance & transactions
+[23:27:17.989] [SUCCESS] All services nominal — ready
+[23:27:32.043] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-17T17:57:32.043Z ---
+[23:27:32.045] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[23:27:32.047] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[23:27:32.049] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[23:27:32.464] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[23:27:32.780] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[23:27:33.089] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[23:27:33.092] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[23:27:33.094] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[23:27:33.098] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+[10:24:53.720] [INFO   ] --- Issue triggered by user: payment_failed @ 2026-03-18T04:54:53.720Z ---
+[10:24:53.723] [INFO   ] User initiated transfer: $500.00 → IBAN DE89370400440532013000
+[10:24:53.726] [INFO   ] POST /v2/payments/transfer — request_id: txn_7f3a91c2
+[10:24:53.728] [INFO   ] Connecting to payment gateway: Stripe Connect EU
+[10:24:54.136] [WARN   ] Gateway response delayed >5000ms, retrying (1/3)...
+[10:24:54.447] [WARN   ] Gateway response delayed >5000ms, retrying (2/3)...
+[10:24:54.756] [ERROR  ] GATEWAY_TIMEOUT: No response after 15000ms — txn_7f3a91c2
+[10:24:54.760] [ERROR  ] Payment stuck in PENDING state — txn_7f3a91c2
+[10:24:54.763] [WARN   ] Rollback NOT triggered — idempotency key preserved
+[10:24:54.766] [ERROR  ] ERROR_CODE: PAY_5031 — Gateway unreachable, balance deducted but transfer not confirmed
+[10:27:44.434] [INFO   ] --- Issue triggered by user: card_declined @ 2026-03-18T04:57:44.434Z ---
+[10:27:44.437] [INFO   ] Card payment initiated: $89.99 at merchant NETFLIX_COM
+[10:27:44.439] [INFO   ] Card token: tok_visa_4242 — sending to card processor
+[10:27:44.751] [INFO   ] Processor response received: DECLINE — reason: INSUFFICIENT_FUNDS
+[10:27:44.754] [WARN   ] Balance check: account_balance=$12480.55, card_processor_cached_balance=$0.00
+[10:27:44.757] [ERROR  ] CACHE DESYNC: Card processor holding stale balance snapshot from 2025-03-10
+[10:27:44.762] [ERROR  ] ERROR_CODE: CARD_4401 — Processor cache not refreshed in 7 days
+[10:27:44.765] [INFO   ] Suggested fix: Force-refresh card processor balance cache for user usr_48291
+────────────────────────────────────────────────────────────
+

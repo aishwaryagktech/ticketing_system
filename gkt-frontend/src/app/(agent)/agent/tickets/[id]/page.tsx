@@ -596,19 +596,49 @@ export default function AgentTicketDetailPage() {
     ((ticket as any).tenant_name as string | undefined) ||
     'Support';
 
+  const agentSignatureName = (() => {
+    const u = user as any;
+    const fullName = [u?.first_name, u?.last_name].filter(Boolean).join(' ').trim();
+    if (fullName) return fullName;
+    if (typeof user?.email === 'string' && user.email.includes('@')) return user.email.split('@')[0] || supportBrand;
+    return supportBrand;
+  })();
+
+  const insertWebFormTemplate = () => {
+    const base =
+      `Hi ${requesterName},\n\n` +
+      `\n` +
+      `Regards,\n` +
+      `${agentSignatureName}`;
+    setReply((prev) => {
+      const p = String(prev || '');
+      if (!p.trim()) return base;
+      const hasHi = /^\s*hi\s+/i.test(p);
+      const hasRegards = /\n\s*regards\s*,?\s*\n/i.test(p);
+      if (!hasHi && !hasRegards) {
+        return `Hi ${requesterName},\n\n${p.trim()}\n\nRegards,\n${agentSignatureName}`;
+      }
+      if (!hasRegards) {
+        return `${p.trim()}\n\nRegards,\n${agentSignatureName}`;
+      }
+      return p;
+    });
+  };
+
   const priority = String(ticket.priority || 'p2').toLowerCase();
   const isP1 = priority === 'p1';
   const role = typeof user?.role === 'string' ? user.role.toLowerCase() : '';
   const isL1 = role === 'l1_agent';
+  const isL2 = role === 'l2_agent';
   const isL3 = role === 'l3_agent';
   const isAdmin = role === 'tenant_admin' || role === 'super_admin';
   const canAssignToMe =
-    isAdmin || (isP1 ? isL3 : isL1);
+    isAdmin || (isP1 ? isL3 : (isL1 || isL2 || isL3));
   const assignToMeReason = canAssignToMe
     ? null
     : isP1
       ? 'P1 tickets can only be assigned to L3 agents.'
-      : 'Non-P1 tickets can only be assigned to L1 agents.';
+      : 'Non-P1 tickets can only be assigned to L1/L2/L3 agents.';
 
   const chip = (label: string, value: string, bg: string, fg: string) => (
     <span
@@ -636,8 +666,15 @@ export default function AgentTicketDetailPage() {
 
         {/* Mockup-style Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <div style={{ fontSize: 22, fontWeight: 950, color: textPrimary, letterSpacing: '-0.02em' }}>
-            {ticket.ticket_number} — {ticket.subject}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+            <div style={{ fontSize: 22, fontWeight: 950, color: textPrimary, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {ticket.ticket_number} — {ticket.subject}
+            </div>
+            {isAssignedToMe && (ticket as any).escalated_by_name && (ticket as any).escalated_by !== user?.id && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {chip('Escalated by', String((ticket as any).escalated_by_name), isDark ? 'rgba(245,158,11,0.14)' : 'rgba(251,191,36,0.18)', isDark ? '#FCD34D' : '#92400E')}
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             {isAssignedToMe && !isReadOnly && (
@@ -1024,6 +1061,27 @@ export default function AgentTicketDetailPage() {
                   </div>
                 ) : showReplyArea ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {isWebForm && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          onClick={insertWebFormTemplate}
+                          disabled={saving}
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: 10,
+                            border: `1px solid ${cardBorder}`,
+                            background: 'transparent',
+                            color: textSecondary,
+                            fontWeight: 800,
+                            fontSize: 11,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Insert template
+                        </button>
+                      </div>
+                    )}
                     <textarea
                       value={reply}
                       onChange={(e) => setReply(e.target.value)}

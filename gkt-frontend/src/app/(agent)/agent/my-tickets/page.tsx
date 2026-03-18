@@ -15,6 +15,8 @@ type TicketListItem = {
   priority: string;
   escalation_level: number;
   assigned_to: string | null;
+  escalated_by?: string | null;
+  escalated_by_name?: string | null;
   tenant_product_id: string | null;
   sla_deadline: string | null;
   sla_breached: boolean;
@@ -113,6 +115,8 @@ export default function MyTicketsPage() {
             <tbody>
               {items.map(t => {
                 const isAssigned = t.assigned_to === user?.id;
+                const escalatedByName = (t.escalated_by_name || '').trim();
+                const showEscalatedBy = !!escalatedByName && t.escalated_by !== user?.id;
                 const statusNorm = String(t.status || '').toLowerCase().replace(/-/g, '_');
                 const isClosedState = statusNorm === 'resolved' || statusNorm === 'closed';
                 return (
@@ -139,6 +143,12 @@ export default function MyTicketsPage() {
                         }}>
                           {isAssigned ? 'Assigned' : 'Escalated'}
                         </span>
+                        {showEscalatedBy && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, color: textSecondary, fontWeight: 700 }}>
+                            <UserRound size={12} style={{ opacity: 0.8 }} />
+                            Escalated by {escalatedByName}
+                          </span>
+                        )}
                         {t.next_escalation_at && !isClosedState && (
                           <span style={{ fontSize: 9, color: (Math.floor((new Date(t.next_escalation_at).getTime() - Date.now()) / 60000) < 30) ? '#F87171' : textSecondary, fontWeight: 700 }}>
                             Jump @ {new Date(t.next_escalation_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}

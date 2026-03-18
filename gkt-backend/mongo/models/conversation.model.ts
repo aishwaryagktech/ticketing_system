@@ -31,6 +31,16 @@ const BotSessionSchema = new Schema({
   ended_at:         { type: Date },
 }, { _id: false });
 
+// Stores FlowPay app logs fetched at session start for AI context
+const AppLogsSchema = new Schema({
+  fetched_at:  { type: Date,     default: null },
+  user_id:     { type: String,   default: null },
+  session_id:  { type: String,   default: null },
+  raw_text:    { type: String,   default: null },
+  error_count: { type: Number,   default: 0    },
+  issue_types: { type: [String], default: []   },
+}, { _id: false });
+
 const ConversationSchema = new Schema({
   // For bot conversations, we use tenant_product_id as the scoping key.
   tenant_product_id: { type: String, required: true, index: true },
@@ -41,6 +51,7 @@ const ConversationSchema = new Schema({
   gmail_thread_id:   { type: String, default: null },
   messages:    { type: [MessageSchema], default: [] },
   bot_session: { type: BotSessionSchema, default: null },
+  app_logs:    { type: AppLogsSchema,    default: null },
   created_at:  { type: Date, default: Date.now },
   updated_at:  { type: Date, default: Date.now },
 });

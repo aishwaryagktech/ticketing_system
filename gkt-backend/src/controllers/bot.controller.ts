@@ -8,6 +8,12 @@ import { getActiveAdapter } from '../ai/provider';
 import { getResolutionTimeMins, computeSlaDeadline } from '../services/sla.service';
 
 type SessionMessage = { from: 'user' | 'bot'; text: string; at: number };
+type AppLogsCache = {
+  raw_text: string;
+  error_count: number;
+  issue_types: string[];
+  loaded: boolean; // true once fetched from Mongo (even if null result)
+};
 type BotSession = {
   id: string;
   tenant_id: string;
@@ -16,6 +22,8 @@ type BotSession = {
   user_email: string | null;
   exchanges: number;
   messages: SessionMessage[];
+  /** Cached FlowPay app logs for this session — loaded once from Mongo */
+  appLogs?: AppLogsCache | null;
   /** When true, next "yes" / "create ticket" creates a handoff ticket instead of ending as resolved */
   pendingHandoffOffer?: boolean;
 };
@@ -35,28 +43,100 @@ async function ragAnswerWithLlm(args: {
   model: string;
   productName?: string | null;
   images?: Array<{ mime_type: string; base64: string }>;
+  appLogContext?: string | null;
+  isFirstMessage?: boolean;
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }): Promise<string> {
   const client = getOpenAI();
-  if (!client) {
-    throw new Error('OPENAI_API_KEY not set');
-  }
+  if (!client) throw new Error('OPENAI_API_KEY not set');
 
-  const { question, contexts, model, productName, images } = args;
-  const contextBlock = contexts
+  const { question, contexts, model, productName, images, appLogContext, isFirstMessage, conversationHistory } = args;
+
+  const kbBlock = contexts
     .slice(0, 4)
     .map((c, i) => `KB CHUNK ${i + 1} (relevance ${c.score.toFixed(3)}):\n${c.text}`)
     .join('\n\n');
 
-  const system =
-    `You are L0 support agent for ${productName || 'the product'}.\n` +
-    `Answer the user using ONLY the provided KB context. If the KB context is insufficient, ask 1-2 clarifying questions.\n` +
-    `Be concise, actionable, and avoid copying long passages verbatim.\n` +
-    `If you reference steps, format as numbered steps.\n`;
+  // ── System prompt: LOG-AWARE mode (when we have app diagnostic data) ──────
+  let system: string;
+  if (appLogContext) {
+    // Work out which "act" of the conversation we're on, based on how many
+    // assistant messages have been exchanged so far (from prior history).
+    const assistantTurns = (conversationHistory || []).filter(m => m.role === 'assistant').length;
 
-  const userText =
-    `User question:\n${question}\n\n` +
-    `Knowledge base context:\n${contextBlock}\n\n` +
-    `Write the best possible support answer now.`;
+    let turnInstruction: string;
+
+    if (isFirstMessage || assistantTurns === 0) {
+      // ACT 1 — Acknowledge only. Ask ONE targeted clarifying question. NO resolution yet.
+      turnInstruction = [
+        'ACT 1 — ACKNOWLEDGE + FIRST CLARIFICATION:',
+        '1. Start with "I can see..." and reference what you found in the logs (exact error code, timestamp, transaction ID, what failed, which page/component). Keep this to 2-3 sentences maximum — no resolution steps yet.',
+        '2. Then ask EXACTLY ONE targeted clarifying question specific to what you saw in the logs (e.g. "Have you attempted the transaction again since [timestamp]?" or "Is this the only payment method you have on file?").',
+        '3. DO NOT give any resolution steps, troubleshooting instructions, or suggestions yet. Just acknowledge + one question. Stop there.',
+        '',
+      ].join('\n');
+
+    } else if (assistantTurns === 1) {
+      // ACT 2 — Process their answer. Ask ONE more clarifying question. Still no resolution.
+      turnInstruction = [
+        'ACT 2 — SECOND CLARIFICATION:',
+        '1. Briefly acknowledge what the user just told you (1 sentence).',
+        '2. Ask EXACTLY ONE more clarifying question that digs deeper. Use the log context and their previous answer to ask something specific (e.g. "Did you receive any email confirmation or error notification at the time?" or "Has this happened before, or is this the first time for this transaction type?").',
+        '3. Do NOT give any resolution steps or suggestions yet. End with just the question.',
+        '',
+      ].join('\n');
+
+    } else {
+      // ACT 3+ — Full resolution. Bot has enough context now.
+      turnInstruction = [
+        'ACT 3 — FULL RESOLUTION:',
+        'You now have enough context. Provide a complete, specific resolution:',
+        '1. Briefly recap what you now know about the issue (1-2 sentences, referencing logs + their answers).',
+        '2. Give numbered resolution steps — tailored to their specific situation and error.',
+        '3. Reference exact log details (error codes, timestamps, component names) in the steps where relevant.',
+        '4. End by asking: "Has this resolved the issue, or would you like me to escalate to a support agent?"',
+        '',
+      ].join('\n');
+    }
+
+
+
+    system = [
+      `You are a proactive, expert L0 support agent for ${productName || 'the product'}.`,
+      '',
+      'You have access to the user\'s real-time diagnostic logs captured from their app session immediately before they opened this chat. These logs contain exact error codes, timestamps, transaction IDs, component names, and what failed. USE THEM.',
+      '',
+      turnInstruction,
+      'STRICT RULES FOR ALL TURNS:',
+      '- Never dump everything at once. Follow the ACT structure precisely.',
+      '- Be specific. Reference exact values from the logs (error codes, txn IDs, timestamps).',
+      '- Tone: calm, expert, personal. Like a senior engineer who already read the full trace.',
+      '- Never make the user re-explain something you can already see in the logs.',
+      '',
+      '══ APP DIAGNOSTIC LOGS (user\'s session) ══',
+      appLogContext,
+      '',
+      ...(kbBlock ? ['══ KNOWLEDGE BASE CONTEXT (use in Act 3 resolution only) ══', kbBlock, ''] : []),
+      'Now respond to the user\'s message. Follow the ACT instructions above exactly.',
+    ].join('\n');
+
+
+
+  } else {
+
+    // ── System prompt: KB-only fallback (no logs available) ─────────────────
+    system =
+      `You are L0 support agent for ${productName || 'the product'}.\n` +
+      `Answer the user using the provided KB context. If KB context is insufficient, ask 1-2 clarifying questions.\n` +
+      `Be concise, actionable, and avoid copying long passages verbatim.\n` +
+      `If you reference steps, format as numbered steps.\n` +
+      `End every response with a follow-up question to keep the conversation going.\n`;
+  }
+
+  // ── Build the messages array (system + history + current question) ─────────
+  const userText = appLogContext
+    ? `User message:\n${question}`
+    : `User question:\n${question}\n\nKnowledge base context:\n${kbBlock}\n\nWrite the best possible support answer now.`;
 
   const userContent: any =
     images && images.length > 0
@@ -64,7 +144,7 @@ async function ragAnswerWithLlm(args: {
           { type: 'text', text: userText },
           ...images
             .filter((im) => im?.base64 && im?.mime_type)
-            .slice(0, 3) // keep it small/cost-safe
+            .slice(0, 3)
             .map((im) => ({
               type: 'image_url',
               image_url: { url: `data:${im.mime_type};base64,${im.base64}` },
@@ -72,15 +152,18 @@ async function ragAnswerWithLlm(args: {
         ]
       : userText;
 
+  // Build the full messages list: system + prior turns (memory) + current
+  const priorTurns: Array<{ role: 'user' | 'assistant'; content: string }> =
+    Array.isArray(conversationHistory) ? conversationHistory.slice(-6) : [];
+
+  const allMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: any }> = [
+    { role: 'system', content: system },
+    ...priorTurns,
+    { role: 'user', content: userContent },
+  ];
+
   const resp = await Promise.race([
-    client.chat.completions.create({
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: userContent },
-      ],
-      temperature: 0.2,
-    }),
+    client.chat.completions.create({ model, messages: allMessages, temperature: 0.3 }),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), 15000)),
   ]);
 
@@ -88,9 +171,50 @@ async function ragAnswerWithLlm(args: {
   return resp.choices?.[0]?.message?.content?.trim() || 'I could not generate a response.';
 }
 
+
 function newSessionId(): string {
   return `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
+
+// ── Load app_logs from MongoDB Conversation for this bot session ──
+async function loadAppLogsForSession(
+  tenant_product_id: string,
+  session_id: string
+): Promise<{ raw_text: string; error_count: number; issue_types: string[] } | null> {
+  try {
+    const doc = await Conversation.findOne(
+      { tenant_product_id, session_id, type: 'bot' },
+      { 'app_logs.raw_text': 1, 'app_logs.error_count': 1, 'app_logs.issue_types': 1 }
+    ).lean();
+    const al = (doc as any)?.app_logs;
+    if (!al?.raw_text) return null;
+    return {
+      raw_text:    String(al.raw_text),
+      error_count: Number(al.error_count || 0),
+      issue_types: Array.isArray(al.issue_types) ? al.issue_types : [],
+    };
+  } catch (e) {
+    console.warn('[AppLogs] loadAppLogsForSession error (non-fatal):', (e as Error).message);
+    return null;
+  }
+}
+
+// ── Format app_logs into a clean LLM-ready string ──
+function buildLogContextString(appLogs: {
+  raw_text: string;
+  error_count: number;
+  issue_types: string[];
+}): string {
+  const issues = appLogs.issue_types.length > 0 ? appLogs.issue_types.join(', ') : 'unknown';
+  return [
+    `Detected Issues: ${issues}`,
+    `Total Errors in session: ${appLogs.error_count}`,
+    '',
+    'Full session log (chronological):',
+    appLogs.raw_text.slice(0, 6000),
+  ].join('\n');
+}
+
 
 function looksLikeHumanRequest(text: string): boolean {
   const t = text.toLowerCase();
@@ -140,10 +264,12 @@ function looksLikeNotResolvedOrDissatisfied(text: string): boolean {
     t.includes('not happy') || t.includes('not satisfied') ||
     t.includes('need a ticket') || t.includes('raise a ticket') || t.includes('raise ticket') ||
     t.includes('create a ticket') || (t.includes('create ticket') && !t.includes("don't")) ||
-    t.includes('connect me') || t.includes('transfer to agent') || t.includes('want to talk to agent') ||
-    (t === 'no' || t === 'nope') // "no" to "did that help?"
+    t.includes('connect me') || t.includes('transfer to agent') || t.includes('want to talk to agent')
+    // NOTE: bare 'no'/'nope' removed — would fire during clarification questions
+    // The dissatisfied guard in chat() already requires exchanges >= 2 before this runs
   );
 }
+
 
 async function appendConversationMessage(args: {
   tenant_id: string;
@@ -208,6 +334,79 @@ async function appendConversationMessage(args: {
       strict: false,
     }
   );
+}
+
+// ── Fetch FlowPay app logs for a user/session and attach to the Mongo Conversation ──
+async function fetchAndAttachAppLogs(args: {
+  tenant_product_id: string;
+  session_id: string;
+  user_id: string;
+  app_session_id?: string | null;
+}): Promise<void> {
+  const { tenant_product_id, session_id, user_id, app_session_id } = args;
+  const logServerUrl = process.env.APP_LOG_SERVER_URL || 'http://localhost:4000';
+  const url = `${logServerUrl}/logs/${encodeURIComponent(user_id)}` +
+    (app_session_id ? `?session_id=${encodeURIComponent(app_session_id)}` : '');
+
+  let rawText = '';
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) return;
+    rawText = await resp.text();
+  } catch {
+    return; // logger server not running — skip silently
+  }
+
+  if (!rawText.trim() || rawText === 'No logs yet.' || rawText === 'No logs for this user.') return;
+
+  // Parse key signals from the plain-text log
+  const errorCount  = (rawText.match(/\[ERROR\s*\]/g) || []).length;
+  const issueMatches = [...rawText.matchAll(/ISSUE\s*:\s*(\S+)/g)].map(m => m[1]);
+  const uniqueIssues = [...new Set(issueMatches)].filter(i => i !== 'n/a');
+
+  const capped = rawText.slice(0, 50_000); // cap at 50 KB
+
+  // 1. Store structured app_logs metadata on the Conversation document
+  await Conversation.updateOne(
+    { tenant_product_id, session_id, type: 'bot' },
+    {
+      $set: {
+        app_logs: {
+          fetched_at:  new Date(),
+          user_id,
+          session_id:  app_session_id || null,
+          raw_text:    capped,
+          error_count: errorCount,
+          issue_types: uniqueIssues,
+        },
+        updated_at: new Date(),
+      },
+    },
+    { upsert: true, strict: false }
+  );
+
+  // 2. Inject the logs as a prepended internal system message so the AI sees them naturally
+  const systemMsg = {
+    message_id:  `syslog_${Date.now()}`,
+    author_type: 'system',
+    author_id:   'flowpay_logger',
+    author_name: 'FlowPay Logger',
+    body:
+      `[SYSTEM CONTEXT — FlowPay App Logs]\n` +
+      `User: ${user_id}${app_session_id ? ` | Session: ${app_session_id}` : ''}\n` +
+      `Errors: ${errorCount} | Issues: ${uniqueIssues.join(', ') || 'none'}\n\n` +
+      rawText.slice(0, 8_000),
+    is_internal:  true,
+    attachments:  [],
+    created_at:   new Date(),
+  };
+
+  await Conversation.updateOne(
+    { tenant_product_id, session_id, type: 'bot' },
+    { $push: { messages: { $each: [systemMsg], $position: 0 } } }
+  );
+
+  console.log(`[FlowPayLogger] Attached ${errorCount} errors, issues=[${uniqueIssues}] to conversation ${session_id}`);
 }
 
 async function createHandoffTicket(args: {
@@ -443,6 +642,8 @@ export async function chat(req: Request, res: Response): Promise<void> {
   const session_id_in = typeof body.session_id === 'string' && body.session_id ? body.session_id : null;
   const user_id = typeof body.user_id === 'string' ? body.user_id : null;
   const user_email = typeof body.user_email === 'string' ? body.user_email : null;
+  // app_session_id = the FlowPay session ID (e.g. sess_a3f9) sent by the widget
+  const app_session_id = typeof body.app_session_id === 'string' && body.app_session_id ? body.app_session_id : null;
   const attachmentsRaw = Array.isArray(body.attachments) ? body.attachments : [];
   const attachments = attachmentsRaw
     .map((a: any) => ({
@@ -480,6 +681,32 @@ export async function chat(req: Request, res: Response): Promise<void> {
       messages: [],
     };
     sessions.set(sessionId, session);
+
+    // Brand-new session: fire-and-forget log fetch from FlowPay logger server
+    if (tenant_product_id && (user_id || app_session_id)) {
+      fetchAndAttachAppLogs({
+        tenant_product_id,
+        session_id: sessionId,
+        user_id: user_id || app_session_id || 'unknown',
+        app_session_id,
+      }).catch(e => console.warn('[FlowPayLogger] fetchAndAttachAppLogs failed (non-fatal):', (e as Error).message));
+    }
+  }
+
+  // ── Load app_logs from Mongo into session cache (once, then reused) ────────
+  // We load AFTER the session is created/retrieved since fetchAndAttachAppLogs
+  // runs async — on first message it may not be ready yet, but on subsequent
+  // messages it will be. Use a small grace window for the first message.
+  if (tenant_product_id && !session.appLogs) {
+    // Give fetchAndAttachAppLogs a moment to write on first message
+    if (session.exchanges === 0) await new Promise(r => setTimeout(r, 800));
+    const loaded = await loadAppLogsForSession(tenant_product_id, sessionId);
+    session.appLogs = loaded
+      ? { ...loaded, loaded: true }
+      : { raw_text: '', error_count: 0, issue_types: [], loaded: true };
+    if (loaded) {
+      console.log(`[AppLogs] Loaded for session ${sessionId}: ${loaded.issue_types} (${loaded.error_count} errors)`);
+    }
   }
 
   session.messages.push({ from: 'user', text: message, at: Date.now() });
@@ -523,7 +750,8 @@ export async function chat(req: Request, res: Response): Promise<void> {
   session.pendingHandoffOffer = false; // clear on any other message
 
   // If user confirms resolved (and we didn't just offer handoff), end the session.
-  if (isYes(message)) {
+  // Guard: only treat "yes" as "resolved" after ACT 3 has been delivered (exchanges >= 2).
+  if (session.exchanges >= 2 && isYes(message)) {
     const replyYes = `Great — happy to help. If you need anything else, just message here anytime.`;
     session.messages.push({ from: 'bot', text: replyYes, at: Date.now() });
     appendConversationMessage({
@@ -539,8 +767,10 @@ export async function chat(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  // User says issue not resolved / not happy → offer to create a ticket (don't create yet)
-  if (looksLikeNotResolvedOrDissatisfied(message)) {
+  // User says issue not resolved / not happy → offer to create a ticket.
+  // Guard: only trigger after ACT 3 (exchanges >= 2) — before that, the user is
+  // answering a clarification question, not reacting to a resolution.
+  if (session.exchanges >= 2 && looksLikeNotResolvedOrDissatisfied(message)) {
     const offerReply =
       `I'm sorry that didn't resolve your issue.\n\n` +
       `Would you like me to create a ticket so a support agent can help? Reply **yes** to create a ticket, or ask me something else.`;
@@ -583,15 +813,29 @@ export async function chat(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  // KB-backed response via Qdrant (semantic search)
+  // ── Build shared context for LLM calls ────────────────────────────────────
+  const appLogContext = session.appLogs?.raw_text
+    ? buildLogContextString(session.appLogs)
+    : null;
+
+  const conversationHistory = session.messages
+    .slice(-8)  // last 8 messages = 4 turns of memory
+    .map(m => ({ role: (m.from === 'user' ? 'user' : 'assistant') as 'user' | 'assistant', content: m.text }));
+
+  const isFirstMessage = session.exchanges === 0;
+
+  // ── KB-backed + log-aware response via Qdrant ──────────────────────────────
   let reply = '';
   try {
     const q = await embedQuery(message);
     const hits = await searchKb(q, { limit: 5, tenant_product_id });
     const top = hits[0];
-    const ok = top && top.score >= 0.25;
+    const kbOk = top && top.score >= 0.25;
 
-    if (ok) {
+    // We call the LLM if KB matched OR we have log context (log-only answer)
+    const hasLlmContext = kbOk || !!appLogContext;
+
+    if (hasLlmContext) {
       const tp = await prisma.tenantProduct.findUnique({
         where: { id: tenant_product_id },
         select: { id: true, name: true, l0_provider: true, l0_model: true },
@@ -600,17 +844,15 @@ export async function chat(req: Request, res: Response): Promise<void> {
       const provider = (tp?.l0_provider || 'openai').toLowerCase();
       const model = tp?.l0_model || 'gpt-4o-mini';
 
-      // For now we implement OpenAI chat; other providers can be added later.
       if (provider !== 'openai') {
         console.warn(`bot chat: l0_provider=${provider} not implemented yet; falling back to OpenAI`);
       }
 
-      const contexts = hits
-        .map((h) => ({
-          text: String((h.payload as any)?.text || ''),
-          score: Number(h.score || 0),
-        }))
-        .filter((c) => c.text.trim().length > 0);
+      const contexts = kbOk
+        ? hits
+            .map((h) => ({ text: String((h.payload as any)?.text || ''), score: Number(h.score || 0) }))
+            .filter((c) => c.text.trim().length > 0)
+        : []; // empty KB contexts — log-only answer
 
       reply = await ragAnswerWithLlm({
         question: message,
@@ -618,6 +860,9 @@ export async function chat(req: Request, res: Response): Promise<void> {
         model,
         productName: tp?.name,
         images: attachments.map((a: { mime_type: string; base64: string }) => ({ mime_type: a.mime_type, base64: a.base64 })),
+        appLogContext,
+        isFirstMessage,
+        conversationHistory,
       });
       appendConversationMessage({
         tenant_id,
@@ -627,11 +872,13 @@ export async function chat(req: Request, res: Response): Promise<void> {
         text: reply,
         meta: { model_used: model, turns_count: session.exchanges },
       }).catch((e) => console.error('bot conversation append(bot) error:', e));
+
     } else {
+      // No KB match AND no logs — last resort: ask for more info or offer ticket
       reply =
-        // `I’m not fully sure based on the knowledge base.\n\n` +
-        `I couldn't find a clear answer in the knowledge base for that.\n\n` +
-        `You can share one more detail (exact error text / where you see it), or I can create a ticket so an agent can help. Reply **yes** to create a ticket.`;
+        `I couldn't find a specific answer in the knowledge base for that.\n\n` +
+        `Could you share a bit more detail — for example, the exact error message or where you're seeing this? ` +
+        `Or if you'd prefer, I can create a ticket and a support agent will follow up. Reply **yes** to create a ticket.`;
       session.pendingHandoffOffer = true;
       appendConversationMessage({
         tenant_id,

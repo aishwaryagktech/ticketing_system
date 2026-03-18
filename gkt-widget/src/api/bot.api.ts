@@ -15,6 +15,7 @@ export const botApi = {
     sessionId?: string | null;
     userId?: string;
     userEmail?: string;
+    appSessionId?: string | null; // host app session ID for FlowPay log correlation
   }) =>
     widgetClient.post('/api/bot/chat', {
       message: args.message,
@@ -23,6 +24,7 @@ export const botApi = {
       session_id: args.sessionId,
       user_id: args.userId,
       user_email: args.userEmail,
+      app_session_id: args.appSessionId || null,
     }),
   handoff: (sessionId: string) =>
     widgetClient.post('/api/bot/handoff', { session_id: sessionId }),
