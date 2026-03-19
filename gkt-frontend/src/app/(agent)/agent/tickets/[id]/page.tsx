@@ -12,6 +12,19 @@ import { connectSocket } from '@/lib/socket';
 import type { Socket } from 'socket.io-client';
 import confetti from 'canvas-confetti';
 
+const RenderMarkdown = ({ text }: { text: string }) => {
+  if (!text) return null;
+  const createHtml = (str: string) => {
+    let ht = str.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    ht = ht.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    ht = ht.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    ht = ht.replace(/_([^_]+)_/g, "<em>$1</em>");
+    ht = ht.replace(/^-\s/gm, "• ");
+    return { __html: ht };
+  };
+  return <span dangerouslySetInnerHTML={createHtml(text)} />;
+};
+
 type Ticket = any;
 type ConversationMessage = {
   id: string;
@@ -31,6 +44,7 @@ export default function AgentTicketDetailPage() {
   const { theme, setTheme } = useTheme();
   const [ticket, setTicket] = useState<Ticket | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [botMessages, setBotMessages] = useState<ConversationMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -55,8 +69,32 @@ export default function AgentTicketDetailPage() {
   const [suggestedReplies, setSuggestedReplies] = useState<string[]>([]);
   const [suggestedRepliesLoading, setSuggestedRepliesLoading] = useState(false);
 
+  const [showBotTranscript, setShowBotTranscript] = useState(false);
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  const displayedMessages = useMemo(() => {
+    if (!showBotTranscript) {
+      return messages.filter(m => m.from !== 'system' && !m.is_internal);
+    }
+    
+    const all = [...botMessages, ...messages].filter(m => m.from !== 'system' && !m.is_internal);
+    
+    const unique = [];
+    const textSeen = new Set();
+    
+    for (const m of all) {
+      if (!m.text) continue;
+      const key = `${m.from}:${m.text.trim()}`;
+      if (!textSeen.has(key)) {
+        textSeen.add(key);
+        unique.push(m);
+      }
+    }
+    
+    unique.sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+    return unique;
+  }, [messages, botMessages, showBotTranscript]);
 
   const isDark = mounted && theme === 'dark';
 
@@ -178,6 +216,24 @@ export default function AgentTicketDetailPage() {
       const conv = (convRes.data?.messages as any[]) || [];
       setMessages(
         conv.map((m: any) => ({
+          id: String(m.id),
+          from: (m.from === 'bot' || m.from === 'user' || m.from === 'agent' || m.from === 'system' ? m.from : 'agent') as
+            | 'user'
+            | 'bot'
+            | 'agent'
+            | 'system',
+          text: String(m.text || ''),
+          is_internal: m.is_internal || false,
+          created_at: m.created_at,
+          author_name: m.author_name ?? null,
+          attachments: Array.isArray(m.attachments) ? m.attachments : [],
+        })),
+      );
+
+      const botRes = await ticketApi.getBotConversation(id);
+      const botConv = (botRes.data?.messages as any[]) || [];
+      setBotMessages(
+        botConv.map((m: any) => ({
           id: String(m.id),
           from: (m.from === 'bot' || m.from === 'user' || m.from === 'agent' || m.from === 'system' ? m.from : 'agent') as
             | 'user'
@@ -915,8 +971,29 @@ export default function AgentTicketDetailPage() {
 
             {/* CONVERSATION / TRANSCRIPT Card */}
             <div style={{ borderRadius: 16, border: `1px solid ${cardBorder}`, background: cardBg, display: 'flex', flexDirection: 'column' }}>
-              <div style={{ padding: '16px 16px 0 16px', fontSize: 13, fontWeight: 900, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
-                {isWebForm ? 'Email Thread' : 'Transcript'}
+              <div style={{ padding: '16px 16px 0 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, color: textSecondary, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {showBotTranscript ? 'Full Conversation' : (isWebForm ? 'Email Thread' : 'Transcript')}
+                </div>
+                <button
+                  onClick={() => setShowBotTranscript(!showBotTranscript)}
+                  style={{
+                    padding: '4px 10px',
+                    borderRadius: 8,
+                    background: showBotTranscript ? 'rgba(59,130,246,0.1)' : 'transparent',
+                    border: `1px solid ${showBotTranscript ? 'rgba(59,130,246,0.3)' : cardBorder}`,
+                    color: showBotTranscript ? accentBlue : textSecondary,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6
+                  }}
+                >
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: showBotTranscript ? accentBlue : textSecondary }} />
+                  {showBotTranscript ? 'Showing Full Chat' : 'Show Bot Chat'}
+                </button>
               </div>
 
               <div
@@ -928,9 +1005,7 @@ export default function AgentTicketDetailPage() {
                 }}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {messages
-                    .filter((m) => m.from !== 'system' && !m.is_internal)
-                    .map((m, idx) => {
+                  {displayedMessages.map((m, idx) => {
                       const isAgent = m.from === 'agent';
                       const isBot = m.from === 'bot';
                       const isCustomer = m.from === 'user';
@@ -981,7 +1056,7 @@ export default function AgentTicketDetailPage() {
                             whiteSpace: 'pre-wrap',
                             boxShadow: '0 1px 2px rgba(0,0,0,0.02)'
                           }}>
-                            {m.text}
+                            <RenderMarkdown text={m.text} />
                             {Array.isArray((m as any).attachments) && (m as any).attachments.length > 0 && (
                               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
                                 {(m as any).attachments.map((a: any, i: number) => (
@@ -1223,7 +1298,7 @@ export default function AgentTicketDetailPage() {
                 <div style={{ fontSize: 12, color: textSecondary }}>Generating summary…</div>
               ) : conversationSummary ? (
                 <div style={{ fontSize: 13, color: textPrimary, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-                  {conversationSummary}
+                  <RenderMarkdown text={conversationSummary} />
                 </div>
               ) : (
                 <div style={{ fontSize: 12, color: textSecondary, fontStyle: 'italic' }}>
@@ -1244,7 +1319,7 @@ export default function AgentTicketDetailPage() {
                       <span style={{ fontSize: 11, fontWeight: 800, color: accentBlue }}>{m.author_name || 'Agent'}</span>
                       <span style={{ fontSize: 10, color: textSecondary }}>{m.created_at ? new Date(m.created_at).toLocaleString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
                     </div>
-                    <div style={{ fontSize: 12, color: textPrimary, whiteSpace: 'pre-wrap' }}>{m.text}</div>
+                    <div style={{ fontSize: 12, color: textPrimary, whiteSpace: 'pre-wrap' }}><RenderMarkdown text={m.text} /></div>
                   </div>
                 ))}
                 {messages.filter(m => m.is_internal).length === 0 && (

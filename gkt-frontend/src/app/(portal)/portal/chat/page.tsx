@@ -57,6 +57,7 @@ export default function PortalChatPage() {
   const [ticketLoading, setTicketLoading] = useState(false);
   const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
   const [conversationClosed, setConversationClosed] = useState(false);
+  const [isL1Session, setIsL1Session] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     { id: 'welcome', from: 'bot', text: 'Hi! How can I help you today?' },
   ]);
@@ -154,6 +155,7 @@ export default function PortalChatPage() {
         .getConversation(tenantId, tenantProductId, existingSessionId)
         .then((res) => {
           const list = res.data?.messages;
+          if (res.data?.is_l1) setIsL1Session(true);
           if (Array.isArray(list) && list.length > 0) {
             setMessages(
               list.map((m: any) => ({
@@ -307,6 +309,18 @@ export default function PortalChatPage() {
     return () => stopVoiceSession();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ─── auto-close on email handoff ──────────────────────────────────────────
+  useEffect(() => {
+    if (ended) {
+      const t = setTimeout(() => {
+        if (hasWindow) {
+          window.parent.postMessage({ type: 'gkt-widget-close' }, '*');
+        }
+      }, 5000);
+      return () => clearTimeout(t);
+    }
+  }, [ended, hasWindow]);
 
   if (!mounted) return null;
 
@@ -687,30 +701,82 @@ export default function PortalChatPage() {
     setMessages((prev) => [...prev, { id, from: 'user', text, attachments: atts }]);
     setSending(true);
     try {
-      const res = await botApi.chat({
-        message: text,
-        tenant_id: tenantId,
-        tenant_product_id: tenantProductId,
-        session_id: sessionId ?? undefined,
-        user_id: userId,
-        user_email: userEmail,
-        attachments: atts,
-      });
+      const res = isL1Session
+        ? await botApi.chatL1({
+            message: text,
+            tenant_id: tenantId,
+            tenant_product_id: tenantProductId,
+            session_id: sessionId ?? undefined,
+            l0_session_id: sessionId ?? undefined,
+            user_id: userId,
+            user_email: userEmail,
+            attachments: atts,
+          })
+        : await botApi.chat({
+            message: text,
+            tenant_id: tenantId,
+            tenant_product_id: tenantProductId,
+            session_id: sessionId ?? undefined,
+            user_id: userId,
+            user_email: userEmail,
+            attachments: atts,
+          });
       const replyText = (res.data?.reply as string) || 'Bot did not return a reply.';
       if (typeof res.data?.session_id === 'string') {
         setSessionId(res.data.session_id);
         if (hasWindow && sessionStorageKey) sessionStorage.setItem(sessionStorageKey, res.data.session_id);
       }
+      
+      const transitionMessage = res.data?.transition_message as string | undefined;
+      if (transitionMessage) {
+        setMessages((prev) => [...prev, { id: `${id}-trans`, from: 'system', text: transitionMessage }]);
+      }
+      
       if (res.data?.ended === true) setEnded(true);
       setMessages((prev) => [...prev, { id: `${id}-bot`, from: 'bot', text: replyText }]);
-      const handoffData = res.data?.handoff as { ticket_id?: string; ticket_number?: string } | undefined;
-      if (handoffData?.ticket_id && tenantId && userEmail) {
-        setEnded(true);
-        if (ticketSocketRef.current) { ticketSocketRef.current.off('ticket:message'); disconnectSocket(); ticketSocketRef.current = null; }
-        setView('tickets');
-        setActiveTicketId(handoffData.ticket_id);
-        await loadTickets();
-        await loadTicketMessagesRef.current(handoffData.ticket_id);
+      const handoffData = res.data?.handoff as { ticket_id?: string; ticket_number?: string; escalate_to?: string; channel?: string } | undefined;
+      
+      // Inline L1 upgrade (Gate 1 or Gate 2 in-session): backend already returned L1's first reply
+      if (res.data?.agent_level === 'l1') {
+        setIsL1Session(true);
+        // nothing else needed – reply is already shown above
+      } else if (handoffData?.escalate_to === 'l1') {
+        setIsL1Session(true);
+        // Ping dedicated /l1/chat endpoint (legacy path)
+        setSending(true);
+        try {
+          const l1Res = await botApi.chatL1({
+            message: 'I have been transferred to you. Please read our chat history and help me resolve this issue.',
+            tenant_id: tenantId,
+            tenant_product_id: tenantProductId,
+            session_id: res.data.session_id,
+            l0_session_id: res.data.session_id,
+            user_id: userId,
+            user_email: userEmail,
+            attachments: [],
+          });
+          const l1Trans = (l1Res.data?.transition_message as string | undefined);
+          if (l1Trans) {
+            setMessages((prev) => [...prev, { id: `${id}-l1-trans`, from: 'system', text: l1Trans }]);
+          }
+          const l1Reply = (l1Res.data?.reply as string) || 'How can I help you?';
+          setMessages((prev) => [...prev, { id: `${id}-l1-init`, from: 'bot', text: l1Reply }]);
+        } catch (e: any) {
+          setError(e?.message || 'Failed to connect to L1 agent');
+        } finally {
+          setSending(false);
+        }
+      } else if (handoffData?.ticket_id && tenantId && userEmail) {
+        if (res.data?.ended === true || handoffData?.channel === 'email') {
+          setEnded(true); // Auto-close in 5s
+        } else {
+          setMessages((prev) => [...prev, { id: `${id}-sys`, from: 'system', text: 'A live agent will join shortly...' }]);
+          if (ticketSocketRef.current) { ticketSocketRef.current.off('ticket:message'); disconnectSocket(); ticketSocketRef.current = null; }
+          setView('tickets');
+          setActiveTicketId(handoffData.ticket_id);
+          await loadTickets();
+          await loadTicketMessagesRef.current(handoffData.ticket_id);
+        }
       }
     } catch (e: any) {
       setError(e?.message || 'Failed to send message');
@@ -737,6 +803,7 @@ export default function PortalChatPage() {
     setView('bot');
     setActiveTicketId(null);
     setConversationClosed(false);
+    setIsL1Session(false);
     if (pollRef.current) clearInterval(pollRef.current);
     setSessionId(null);
     if (hasWindow && sessionStorageKey) sessionStorage.removeItem(sessionStorageKey);

@@ -151,6 +151,8 @@ model TenantProduct {
   status      String   @default("active") // active | inactive
   l0_model    String?
   l0_provider String?
+  l1_model    String?  // L1 AI agent model
+  l1_provider String?  // L1 AI agent provider
   created_at  DateTime @default(now())
   created_by  String?
 
@@ -361,20 +363,21 @@ model KbArticle {
 }
 
 model KbSource {
-  id           String   @id @default(uuid())
-  product_id   String
-  tenant_id    String?
+  id                String   @id @default(uuid())
+  product_id        String
+  tenant_id         String?
   tenant_product_id String?
-  source_type  String   @default("crawled") // crawled | upload
-  url          String
-  title        String?
-  content_text String
-  content_hash String
-  status       String   @default("extracted") // extracted | failed
-  error        String?
-  created_by   String
-  created_at   DateTime @default(now())
-  updated_at   DateTime @default(now()) @updatedAt
+  agent_level       String   @default("l0") // l0 | l1 — which AI agent this KB belongs to
+  source_type       String   @default("crawled") // crawled | upload
+  url               String
+  title             String?
+  content_text      String
+  content_hash      String
+  status            String   @default("extracted") // extracted | failed
+  error             String?
+  created_by        String
+  created_at        DateTime @default(now())
+  updated_at        DateTime @default(now()) @updatedAt
 
   product Product @relation(fields: [product_id], references: [id])
 
@@ -541,6 +544,7 @@ model TenantChannelSettings {
   created_at         DateTime @default(now())
   updated_at         DateTime @updatedAt
   default_product_id String?
+  human_support_channel String @default("email")
 
   tenant Tenant @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
 

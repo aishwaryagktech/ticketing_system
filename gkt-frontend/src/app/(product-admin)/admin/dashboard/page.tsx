@@ -848,6 +848,8 @@ function KbInline(props: KbInlineProps) {
   const [uploading, setUploading] = useState(false);
   const [crawling, setCrawling] = useState(false);
   const [creatingArticle, setCreatingArticle] = useState(false);
+  // L0 / L1 agent-level KB selector
+  const [agentLevel, setAgentLevel] = useState<'l0' | 'l1'>('l0');
 
   const [crawl, setCrawl] = useState({
     url: '',
@@ -891,13 +893,13 @@ function KbInline(props: KbInlineProps) {
     if (!mounted) return;
     setLoadingLists(true);
     onboardingApi
-      .kbSources(tenantProductId || undefined)
+      .kbSources(tenantProductId || undefined, agentLevel)
       .then((s) => {
         setSources(Array.isArray(s) ? s : []);
       })
       .catch(() => setSources([]))
       .finally(() => setLoadingLists(false));
-  }, [mounted, tenantProductId]);
+  }, [mounted, tenantProductId, agentLevel]);
 
   const cardBg = isDark ? 'rgba(15,23,42,0.95)' : '#FFFFFF';
   const pageBg = isDark ? 'rgba(2,6,23,0.6)' : 'rgba(15,23,42,0.03)';
@@ -918,10 +920,10 @@ function KbInline(props: KbInlineProps) {
     setSuccess('');
     setUploading(true);
     try {
-      await onboardingApi.kbUpload(file, tenantProductId || undefined);
-      const s = await onboardingApi.kbSources(tenantProductId || undefined);
+      await onboardingApi.kbUpload(file, tenantProductId || undefined, agentLevel);
+      const s = await onboardingApi.kbSources(tenantProductId || undefined, agentLevel);
       setSources(Array.isArray(s) ? s : []);
-      setSuccess('Document uploaded.');
+      setSuccess(`Document uploaded to ${agentLevel.toUpperCase()} knowledge base.`);
     } catch (e: any) {
       setError(e?.message || 'Failed to upload document');
     } finally {
@@ -964,6 +966,36 @@ function KbInline(props: KbInlineProps) {
       )}
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14 }}>
+        {/* L0 / L1 Agent KB Tab Switcher */}
+        <div
+          style={{
+            display: 'flex',
+            background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)',
+            borderRadius: 10,
+            padding: 3,
+            gap: 2,
+          }}
+        >
+          {(['l0', 'l1'] as const).map((lvl) => (
+            <button
+              key={lvl}
+              onClick={() => setAgentLevel(lvl)}
+              style={{
+                padding: '5px 14px',
+                borderRadius: 8,
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 700,
+                fontSize: 12,
+                background: agentLevel === lvl ? accentBrand : 'transparent',
+                color: agentLevel === lvl ? '#fff' : textSecondary,
+                transition: 'all 0.15s ease',
+              }}
+            >
+              {lvl.toUpperCase()} Agent KB
+            </button>
+          ))}
+        </div>
         <div
           style={{
             fontSize: 11,
@@ -1084,7 +1116,7 @@ function KbInline(props: KbInlineProps) {
                 marginBottom: 8,
               }}
             >
-              Uploaded docs
+              Uploaded docs ({agentLevel.toUpperCase()} Agent)
             </div>
             {loadingLists ? (
               <div style={{ color: textSecondary, fontSize: 12 }}>Loading…</div>
@@ -1191,11 +1223,13 @@ function KbInline(props: KbInlineProps) {
                     setError('Select a product above first.');
                     return;
                   }
-                  const src = await onboardingApi.kbCrawl(crawl.url, tenantProductId || undefined);
+                  const src = await onboardingApi.kbCrawl(crawl.url, tenantProductId || undefined, agentLevel);
                   setSelectedCrawlId(src.id);
                   setSelectedUploadId(null);
                   setSelectedSource(src?.content_text != null ? src : await onboardingApi.kbSource(src.id).catch(() => src));
-                  setSuccess('Page crawled. Preview below and create KB article if needed.');
+                  const newSources = await onboardingApi.kbSources(tenantProductId || undefined, agentLevel);
+                  setSources(Array.isArray(newSources) ? newSources : []);
+                  setSuccess(`Page crawled and added to ${agentLevel.toUpperCase()} Agent KB.`);
                 } catch (e: any) {
                   setError(e?.message || 'Failed to crawl URL');
                 } finally {
@@ -1740,6 +1774,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
   const [chatEnabled, setChatEnabled] = useState(true);
   const [chatPosition, setChatPosition] = useState<'bottom-right' | 'bottom-left'>('bottom-right');
   const [chatPrimaryColor, setChatPrimaryColor] = useState('#FACC15');
+  const [humanSupportChannel, setHumanSupportChannel] = useState<'chat' | 'email'>('email');
   const [formEnabled, setFormEnabled] = useState(true);
   const [formPath, setFormPath] = useState('/support');
   const [emailEnabled, setEmailEnabled] = useState(true);
@@ -1766,6 +1801,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
         if (typeof data.email_enabled === 'boolean') setEmailEnabled(data.email_enabled);
         if (typeof data.support_email === 'string') setSupportEmail(data.support_email || 'support@example.com');
         if (typeof data.default_product_id === 'string') setSelectedProductId(data.default_product_id);
+        if (data.human_support_channel === 'chat' || data.human_support_channel === 'email') setHumanSupportChannel(data.human_support_channel);
       })
       .catch(() => {
         // ignore, keep defaults
@@ -1968,6 +2004,42 @@ function ChannelsInline(props: ChannelsInlineProps) {
             </div>
           </div>
 
+          {/* Human Support Channel */}
+          <div>
+            <label
+              style={{
+                display: 'block',
+                fontSize: 12,
+                fontWeight: 600,
+                color: textSecondary,
+                marginBottom: 4,
+              }}
+            >
+              When bot escalates to human agent
+            </label>
+            <select
+              value={humanSupportChannel}
+              onChange={(e) => setHumanSupportChannel(e.target.value as 'chat' | 'email')}
+              style={{
+                width: '100%',
+                padding: '9px 10px',
+                borderRadius: 10,
+                border: `1px solid ${borderSubtle}`,
+                background: inputBg,
+                color: textPrimary,
+                fontSize: 12,
+              }}
+            >
+              <option value="email">Email — close chat, agent follows up via email</option>
+              <option value="chat">Chat — keep chat open, agent continues in widget</option>
+            </select>
+            <div style={{ marginTop: 4, fontSize: 11, color: textSecondary }}>
+              {humanSupportChannel === 'email'
+                ? "Widget closes with a \"We'll get back to you\" message. Ticket source becomes web_form."
+                : 'Widget stays open. Agent can reply directly in the chat widget.'}
+            </div>
+          </div>
+
           <div
             style={{
               marginTop: 6,
@@ -2112,6 +2184,7 @@ function ChannelsInline(props: ChannelsInlineProps) {
               email_enabled: emailEnabled,
               support_email: supportEmail || null,
               default_product_id: tenantProductIdForSnippet !== 'PRODUCT_ID' ? tenantProductIdForSnippet : null,
+              human_support_channel: humanSupportChannel,
             });
             setSuccess('Channel settings saved.');
           } catch (e: any) {
@@ -2458,7 +2531,7 @@ export default function TenantDashboardPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [agentName, setAgentName] = useState('');
   const [agentEmail, setAgentEmail] = useState('');
-  const [agentRole, setAgentRole] = useState('l1_agent');
+  const [agentRole, setAgentRole] = useState('l2_agent');
   const [agentSupportLevel, setAgentSupportLevel] = useState('L1');
   const [agentProducts, setAgentProducts] = useState<string[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
@@ -4024,7 +4097,7 @@ export default function TenantDashboardPage() {
                                 setPeopleFirstName(a.first_name || '');
                                 setPeopleLastName(a.last_name || '');
                                 setAgentEmail(a.email || '');
-                                setAgentRole(a.role || 'l1_agent');
+                                setAgentRole(a.role || 'l2_agent');
                                 setAgentProducts(
                                   Array.isArray(a.assigned_products)
                                     ? a.assigned_products
@@ -4683,7 +4756,6 @@ export default function TenantDashboardPage() {
                       >
                         {editingPersonId ? (
                           <>
-                            <option value="l1_agent">L1 Agent</option>
                             <option value="l2_agent">L2 Agent</option>
                             <option value="l3_agent">L3 Agent</option>
                             <option value="tenant_admin">Admin</option>
@@ -4692,7 +4764,6 @@ export default function TenantDashboardPage() {
                           <>
                             {!agentLimitReached && (
                               <>
-                                <option value="l1_agent">L1 Agent</option>
                                 <option value="l2_agent">L2 Agent</option>
                                 <option value="l3_agent">L3 Agent</option>
                               </>

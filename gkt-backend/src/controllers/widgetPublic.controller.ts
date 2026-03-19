@@ -92,7 +92,9 @@ export async function listTicketMessages(req: Request, res: Response): Promise<v
           { tenant_product_id: ticket.tenant_product_id, ticket_id: ticket.id, type: 'bot' },
         ).lean();
         if (convo && Array.isArray(convo.messages) && convo.messages.length > 0) {
-          fromMongo = convo.messages.map((m: any) => {
+          fromMongo = convo.messages
+            .filter((m: any) => m.author_type !== 'system')
+            .map((m: any) => {
             const { text, boldPrefix } = decryptForDisplayWithBold(m.body);
             return {
               id: m.message_id,

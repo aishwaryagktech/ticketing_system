@@ -1,0 +1,124 @@
+export async function chat(req: Request, res: Response): Promise<void> {
+  const body = (req.body as any) || {};
+  const message = typeof body.message === 'string' ? body.message.trim() : '';
+  const tenant_id = typeof body.tenant_id === 'string' ? body.tenant_id : '';
+  const tenant_product_id = typeof body.tenant_product_id === 'string' ? body.tenant_product_id : null;
+  const session_id_in = typeof body.session_id === 'string' && body.session_id ? body.session_id : null;
+  const user_id = typeof body.user_id === 'string' ? body.user_id : null;
+  const user_email = typeof body.user_email === 'string' ? body.user_email : null;
+  const app_session_id = typeof body.app_session_id === 'string' && body.app_session_id ? body.app_session_id : null;
+  const attachmentsRaw = Array.isArray(body.attachments) ? body.attachments : [];
+  const attachments = attachmentsRaw
+    .map((a: any) => ({
+      filename: String(a?.filename || 'image'),
+      mime_type: String(a?.mime_type || ''),
+      size_bytes: Number(a?.size_bytes || 0),
+      base64: String(a?.base64 || ''),
+    }))
+    .filter((a: any) => a.mime_type.startsWith('image/') && a.base64 && a.base64.length > 20)
+    .slice(0, 3);
+
+  if (!tenant_id) { res.status(400).json({ error: 'tenant_id required' }); return; }
+  if (!tenant_product_id) { res.status(400).json({ error: 'tenant_product_id required' }); return; }
+  if (!message) { res.status(400).json({ error: 'message required' }); return; }
+
+  const sessionId = session_id_in ?? newSessionId();
+  let session = sessions.get(sessionId);
+  if (!session) {
+    session = { id: sessionId, tenant_id, tenant_product_id, user_id, user_email, exchanges: 0, messages: [] };
+    sessions.set(sessionId, session);
+
+    try {
+      const initialTicket = await createHandoffTicket({
+        tenant_id, user_email, subject: 'Support request (from chatbot)',
+        description: message, priority: classifyPriority(message), session
+      });
+      session.ticket_id = initialTicket.ticket_id;
+      session.ticket_number = initialTicket.ticket_number;
+    } catch (e) {
+      console.error('Failed to create initial ticket on session start:', e);
+    }
+
+    if (tenant_product_id && (user_id || app_session_id)) {
+      fetchAndAttachAppLogs({
+        tenant_product_id, session_id: sessionId, user_id: user_id || app_session_id || 'unknown', app_session_id
+      }).catch(e => console.warn('[FlowPayLogger] log fetch failed (non-fatal):', (e as Error).message));
+    }
+  }
+
+  if (tenant_product_id && !session.appLogs) {
+    if (session.exchanges === 0) await new Promise(r => setTimeout(r, 800));
+    const loaded = await loadAppLogsForSession(tenant_product_id, sessionId);
+    session.appLogs = loaded ? { ...loaded, loaded: true } : { raw_text: '', error_count: 0, issue_types: [], loaded: true };
+  }
+
+  session.messages.push({ from: 'user', text: message, at: Date.now() });
+  appendConversationMessage({
+    tenant_id, tenant_product_id, session_id: sessionId, from: 'user', text: message, user_id, user_email, attachments,
+    meta: session.ticket_id ? { ticket_id: session.ticket_id } : undefined,
+  }).catch((e) => console.error('bot conversation append(user) error:', e));
+
+  if (session.pendingHandoffOffer && acceptsHandoffOffer(message)) {
+    session.pendingHandoffOffer = false;
+    if (session.ticket_id) {
+      try {
+        await prisma.ticket.update({ where: { id: session.ticket_id }, data: { status: 'open' } });
+        await prisma.ticketComment.create({
+          data: { ticket_id: session.ticket_id, product_id: tenant_product_id || '', author_id: session.user_id ?? 'bot', body: `User accepted handoff. Escalating to L1.\nLast message: ${message}`, is_internal: true, is_bot: true }
+        });
+      } catch (e) { console.error('Failed to update ticket on escalate', e); }
+    }
+    const reply = `I've escalated this to our L1 support agent. They will join the chat momentarily.\n\nTicket: ${session.ticket_number || 'Unknown'}`;
+    session.messages.push({ from: 'bot', text: reply, at: Date.now() });
+    appendConversationMessage({
+      tenant_id, tenant_product_id, session_id: sessionId, from: 'bot', text: reply, meta: { handoff_reason: 'user_accepted_offer', handoff_ticket_id: session.ticket_id, turns_count: session.exchanges }
+    }).catch((e) => console.error('bot conversation append(bot handoff) error:', e));
+    sessions.delete(sessionId);
+    res.json({ reply, session_id: sessionId, handoff: { escalate_to: 'l1', ticket_id: session.ticket_id, ticket_number: session.ticket_number } });
+    return;
+  }
+  session.pendingHandoffOffer = false;
+
+  if (session.exchanges >= 2 && isYes(message)) {
+    const replyYes = `Great — happy to help. If you need anything else, just message here anytime.`;
+    session.messages.push({ from: 'bot', text: replyYes, at: Date.now() });
+    appendConversationMessage({
+      tenant_id, tenant_product_id, session_id: sessionId, from: 'bot', text: replyYes, meta: { resolved_by_bot: true, turns_count: session.exchanges, ended_at: new Date() }
+    }).catch((e) => console.error('bot conversation append(bot yes) error:', e));
+    sessions.delete(sessionId);
+    res.json({ reply: replyYes, session_id: sessionId, ended: true });
+    return;
+  }
+
+  if (session.exchanges >= 2 && looksLikeNotResolvedOrDissatisfied(message)) {
+    const offerReply = `I'm sorry that didn't resolve your issue.\n\nWould you like me to hand this over to our L1 support agent? Reply **yes** to connect with an agent, or ask me something else.`;
+    session.messages.push({ from: 'bot', text: offerReply, at: Date.now() });
+    appendConversationMessage({
+      tenant_id, tenant_product_id, session_id: sessionId, from: 'bot', text: offerReply, meta: { turns_count: session.exchanges }
+    }).catch((e) => console.error('bot conversation append(bot offer) error:', e));
+    session.exchanges += 1;
+    session.pendingHandoffOffer = true;
+    res.json({ reply: offerReply, session_id: sessionId });
+    return;
+  }
+
+  if (looksLikeHumanRequest(message)) {
+    if (session.ticket_id) {
+      try {
+        await prisma.ticket.update({ where: { id: session.ticket_id }, data: { status: 'open' } });
+        await prisma.ticketComment.create({
+          data: { ticket_id: session.ticket_id, product_id: tenant_product_id || '', author_id: session.user_id ?? 'bot', body: `User explicitly requested escalation to a human.\nLast message: ${message}`, is_internal: true, is_bot: true }
+        });
+      } catch (e) { console.error('Failed to update ticket on explicit escalate', e); }
+    }
+    const reply = `No problem — I’m escalating this to our L1 support agent right now.\n\nTicket: ${session.ticket_number || 'Unknown'}`;
+    session.messages.push({ from: 'bot', text: reply, at: Date.now() });
+    appendConversationMessage({
+      tenant_id, tenant_product_id, session_id: sessionId, from: 'bot', text: reply, meta: { handoff_reason: 'user_requested_escalation', handoff_ticket_id: session.ticket_id, turns_count: session.exchanges }
+    }).catch((e) => console.error('bot conversation append(bot handoff) error:', e));
+    sessions.delete(sessionId);
+    res.json({ reply, session_id: sessionId, handoff: { escalate_to: 'l1', ticket_id: session.ticket_id, ticket_number: session.ticket_number } });
+    return;
+  }
+
+  // ── Build shared context for LLM calls ────────────────────────────────────

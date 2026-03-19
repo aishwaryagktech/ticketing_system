@@ -51,7 +51,7 @@ export async function listTickets(req: AuthRequest, res: Response): Promise<void
       ...(tenant_product_id ? { tenant_product_id } : {}),
       ...(status ? { status } : {}),
       ...(priority ? { priority } : {}),
-      ...(Number.isFinite(escalation_level) ? { escalation_level } : {}),
+      ...(Number.isFinite(escalation_level) ? { escalation_level } : { escalation_level: { gte: 3 } }),
       ...(sla_breached !== undefined ? { sla_breached } : {}),
     };
 
@@ -748,7 +748,10 @@ export async function updateStatus(req: AuthRequest, res: Response): Promise<voi
       return;
     }
 
-    const updated = await prisma.ticket.update({ where: { id }, data: { status } });
+    const updated = await prisma.ticket.update({
+      where: { id },
+      data: { status: status as import('@prisma/client').TicketStatus },
+    });
 
     // Notify chatbot in real time when an agent starts working on the ticket
     if (status === 'in_progress') {
@@ -799,9 +802,9 @@ export async function updateStatus(req: AuthRequest, res: Response): Promise<voi
     if (status === 'resolved' || status === 'closed') {
       try {
         const tpId = (t as any).tenant_product_id;
+        const thankYouBody = 'Thank you for contacting us. This conversation is now closed.';
         if (tpId) {
           const convType = (t as any).source === 'web_form' ? 'ticket' : 'bot';
-          const thankYouBody = 'Thank you for contacting us. This conversation is now closed.';
           await Conversation.updateOne(
             { tenant_product_id: tpId, ticket_id: id, type: convType },
             {
@@ -1010,6 +1013,65 @@ export async function getTicketConversation(req: AuthRequest, res: Response): Pr
   }
 }
 
+// GET /api/tickets/:id/bot-conversation
+export async function getBotConversation(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  const { id } = req.params;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant context required' });
+    return;
+  }
+
+  try {
+    const ticket = await prisma.ticket.findFirst({
+      where: { id, tenant_id: tenantId },
+      select: { id: true, tenant_product_id: true },
+    });
+    if (!ticket) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+
+    if (!ticket.tenant_product_id) {
+      res.json({ messages: [] });
+      return;
+    }
+
+    const convo = await Conversation.findOne({
+      tenant_product_id: ticket.tenant_product_id,
+      ticket_id: ticket.id,
+      type: 'bot',
+    }).lean();
+
+    if (convo && Array.isArray(convo.messages) && convo.messages.length > 0) {
+      const msgs = convo.messages
+        .map((m: any) => ({
+          id: m.message_id,
+          from: m.author_type === 'system' ? 'system' : m.author_type === 'bot' ? 'bot' : m.author_type === 'user' ? 'user' : 'agent',
+          author_name: m.author_name && m.author_type === 'agent' ? decryptForDisplay(m.author_name) : undefined,
+          text: decryptForDisplay(m.body),
+          is_internal: m.is_internal || false,
+          attachments: Array.isArray(m.attachments)
+            ? m.attachments.map((a: any) => ({
+                filename: String(a.filename || 'image'),
+                mime_type: String(a.mime_type || ''),
+                size_bytes: Number(a.size_bytes || 0),
+                base64: String(a.base64 || ''),
+              }))
+            : [],
+          created_at: m.created_at ? new Date(m.created_at) : new Date(),
+        }))
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      res.json({ messages: msgs });
+    } else {
+      res.json({ messages: [] });
+    }
+  } catch (e) {
+    console.error('getBotConversation error:', e);
+    res.status(500).json({ error: 'Failed to load bot conversation' });
+  }
+}
+
 // GET /api/tickets/:id/conversation-summary
 export async function getConversationSummary(req: AuthRequest, res: Response): Promise<void> {
   const tenantId = req.user?.tenant_id;
@@ -1100,7 +1162,11 @@ export async function getConversationSummary(req: AuthRequest, res: Response): P
           {
             role: 'user',
             content:
-              'Summarize this support conversation in 2–3 short sentences for an agent. Focus on what the customer asked and the current state. Be concise.\n\n' +
+              'Analyze the following support conversation and provide a concise summary for a human agent. Format your response STRICTLY as a bulleted list with these points:\n' +
+              '- **Issue**: What is the user trying to do/fix?\n' +
+              '- **Steps Tried**: What has the bot or user already tried?\n' +
+              '- **Status**: Why was it escalated/what is pending?\n\n' +
+              'Be brief and direct. Here is the transcript:\n\n' +
               conversationText,
           },
         ],

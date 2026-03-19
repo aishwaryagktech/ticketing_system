@@ -210,6 +210,7 @@ export const onboardingApi = {
     email_enabled?: boolean;
     support_email?: string | null;
     default_product_id?: string | null;
+    human_support_channel?: 'chat' | 'email';
   }) =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/channels`, {
       method: 'PUT',
@@ -249,23 +250,28 @@ export const onboardingApi = {
         return data;
       });
     }),
-  kbCrawl: (url: string, tenant_product_id?: string) =>
+  kbCrawl: (url: string, tenant_product_id?: string, agent_level: 'l0' | 'l1' = 'l0') =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/kb/crawl`, {
       method: 'POST',
-      body: JSON.stringify({ url, tenant_product_id }),
+      body: JSON.stringify({ url, tenant_product_id, agent_level }),
     }).then((r) =>
       r.json().catch(() => ({})).then((data) => {
         if (!r.ok) throw new Error(String(data?.error || 'Failed to crawl'));
         return data;
       })
     ),
-  kbSources: (tenant_product_id?: string) =>
-    fetchWithAuthRetry(`${API_BASE}/api/onboarding/kb/sources${tenant_product_id ? `?tenant_product_id=${encodeURIComponent(tenant_product_id)}` : ''}`).then((r) =>
+  kbSources: (tenant_product_id?: string, agent_level?: 'l0' | 'l1') => {
+    const params = new URLSearchParams();
+    if (tenant_product_id) params.append('tenant_product_id', tenant_product_id);
+    if (agent_level) params.append('agent_level', agent_level);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return fetchWithAuthRetry(`${API_BASE}/api/onboarding/kb/sources${qs}`).then((r) =>
       r.json().catch(() => ([])).then((data) => {
         if (!r.ok) throw new Error(String(data?.error || 'Failed to load sources'));
         return data;
       })
-    ),
+    );
+  },
   kbSource: (id: string) =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/kb/sources/${id}`).then((r) =>
       r.json().catch(() => ({})).then((data) => {
@@ -297,11 +303,12 @@ export const onboardingApi = {
         return data;
       })
     ),
-  kbUpload: async (file: File, tenant_product_id?: string) => {
+  kbUpload: async (file: File, tenant_product_id?: string, agent_level: 'l0' | 'l1' = 'l0') => {
     const buildForm = () => {
       const form = new FormData();
       form.append('file', file);
       if (tenant_product_id) form.append('tenant_product_id', tenant_product_id);
+      form.append('agent_level', agent_level);
       return form;
     };
     const doUpload = (token: string | null) =>
@@ -319,6 +326,7 @@ export const onboardingApi = {
     if (!res.ok) throw new Error(String((data as any)?.error || 'Failed to upload'));
     return data;
   },
+
   kbArticles: (tenant_product_id?: string) =>
     fetchWithAuthRetry(`${API_BASE}/api/onboarding/kb/articles${tenant_product_id ? `?tenant_product_id=${encodeURIComponent(tenant_product_id)}` : ''}`).then((r) =>
       r.json().catch(() => ([])).then((data) => {
@@ -340,6 +348,16 @@ export const onboardingApi = {
     }).then((r) =>
       r.json().catch(() => ({})).then((data) => {
         if (!r.ok) throw new Error(String(data?.error || 'Failed to save model'));
+        return data;
+      })
+    ),
+  setL1Model: (tenant_product_id: string, provider_name: string, model: string) =>
+    fetchWithAuthRetry(`${API_BASE}/api/onboarding/ai/l1-model`, {
+      method: 'PUT',
+      body: JSON.stringify({ tenant_product_id, provider_name, model }),
+    }).then((r) =>
+      r.json().catch(() => ({})).then((data) => {
+        if (!r.ok) throw new Error(String(data?.error || 'Failed to save L1 model'));
         return data;
       })
     ),

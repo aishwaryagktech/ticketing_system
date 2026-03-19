@@ -38,5 +38,7 @@ router.delete('/kb/articles/:id', onboardingController.deleteKbArticle);
 router.post('/kb/upload', upload.single('file'), onboardingController.uploadKbDocument);
 router.get('/ai/models', onboardingController.listAvailableModels);
 router.put('/ai/l0-model', onboardingController.setL0Model);
+router.put('/ai/l1-model', onboardingController.setL1Model);
 
 export default router;
+

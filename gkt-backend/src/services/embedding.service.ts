@@ -1,6 +1,9 @@
 /**
  * Generate embeddings (OpenAI) and index KB documents in Qdrant for RAG.
  * Uses QDRANT_URL and QDRANT_API_KEY from env; OpenAI for embeddings.
+ *
+ * agent_level: 'l0' | 'l1' — each KB doc is tagged with the agent it belongs to.
+ * L0 bot searches only L0 docs; L1 bot searches only L1 docs (strict separation).
  */
 
 import OpenAI from 'openai';
@@ -64,7 +67,6 @@ async function ensureCollection(): Promise<void> {
     } catch (e: any) {
       const msg = String(e?.data?.status?.error || e?.message || '');
       if (msg.toLowerCase().includes('already exists')) return;
-      // Some Qdrant deployments return a generic 400/409 for existing indexes; ignore those too.
       if (e?.status === 409) return;
       console.warn(`EmbeddingService: createPayloadIndex(${field_name}) skipped:`, msg || e);
     }
@@ -73,6 +75,7 @@ async function ensureCollection(): Promise<void> {
   await ensureIndex('tenant_id', 'uuid');
   await ensureIndex('tenant_product_id', 'uuid');
   await ensureIndex('product_id', 'uuid');
+  await ensureIndex('agent_level', 'keyword');
 }
 
 async function embedTexts(texts: string[]): Promise<number[][]> {
@@ -92,6 +95,7 @@ export interface IndexKbDocumentParams {
   tenant_product_id: string | null;
   title: string;
   content_text: string;
+  agent_level?: 'l0' | 'l1'; // which AI agent this KB belongs to (default: 'l0')
 }
 
 /**
@@ -99,7 +103,7 @@ export interface IndexKbDocumentParams {
  * Chunks the text, generates embeddings, and upserts points.
  */
 export async function indexKbDocument(params: IndexKbDocumentParams): Promise<void> {
-  const { kb_source_id, tenant_id, product_id, tenant_product_id, title, content_text } = params;
+  const { kb_source_id, tenant_id, product_id, tenant_product_id, title, content_text, agent_level = 'l0' } = params;
   if (!content_text || content_text.length < 50) return;
 
   const client = getOpenAI();
@@ -151,10 +155,11 @@ export async function indexKbDocument(params: IndexKbDocumentParams): Promise<vo
     vector: vectors[i],
     payload: {
       kb_source_id,
-      // Keep legacy fields, but the bot search filters ONLY by tenant_product_id.
+      // Keep legacy fields for compatibility
       tenant_id: tenant_id ?? undefined,
       product_id,
       tenant_product_id: tenant_product_id || undefined,
+      agent_level, // 'l0' | 'l1' — strict per-agent KB filter
       title: title?.slice(0, 500),
       text: text.slice(0, 2000),
       chunk_index: i,
@@ -186,22 +191,29 @@ export async function deleteKbDocumentFromQdrant(kb_source_id: string): Promise<
 
 /**
  * Search KB by query text for RAG. Returns scored points with payload.
+ *
+ * agent_level: 'l0' | 'l1' — strictly filters to only that agent's KB docs.
+ * L0 bot always passes 'l0'; L1 bot always passes 'l1'.
  */
 export async function searchKb(
   queryEmbedding: number[],
-  options: { limit?: number; tenant_product_id?: string } = {}
+  options: { limit?: number; tenant_product_id?: string; agent_level?: 'l0' | 'l1' } = {}
 ): Promise<Array<{ id: string; score: number; payload: Record<string, unknown> }>> {
   const limit = options.limit ?? 10;
-  const filter: { must?: Array<{ key: string; match: { value: string } }> } = {};
+  const must: Array<{ key: string; match: { value: string } }> = [];
+
   if (options.tenant_product_id) {
-    filter.must = [...(filter.must ?? []), { key: 'tenant_product_id', match: { value: options.tenant_product_id } }];
+    must.push({ key: 'tenant_product_id', match: { value: options.tenant_product_id } });
+  }
+  if (options.agent_level) {
+    must.push({ key: 'agent_level', match: { value: options.agent_level } });
   }
 
   const results = await qdrantClient.search(KB_COLLECTION, {
     vector: queryEmbedding,
     limit,
     with_payload: true,
-    ...(filter.must?.length ? { filter } : {}),
+    ...(must.length > 0 ? { filter: { must } } : {}),
   });
 
   return (results ?? []).map((p) => ({

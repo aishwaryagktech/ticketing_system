@@ -9,6 +9,7 @@ router.use(auth);
 router.get('/', ticketController.listTickets);
 router.get('/:id', ticketController.getTicket);
 router.get('/:id/conversation', ticketController.getTicketConversation);
+router.get('/:id/bot-conversation', ticketController.getBotConversation);
 router.get('/:id/conversation-summary', ticketController.getConversationSummary);
 router.get('/:id/escalation-history', ticketController.getTicketEscalationHistory);
 router.get('/:id/ai-suggestions', ticketController.suggestReplies);

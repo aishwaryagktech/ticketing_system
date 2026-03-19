@@ -30,6 +30,26 @@ export const botApi = {
       user_email: args.user_email,
       attachments: args.attachments || [],
     }),
+  chatL1: (args: {
+    message: string;
+    tenant_id: string;
+    tenant_product_id?: string;
+    session_id?: string;
+    l0_session_id?: string;
+    user_id?: string;
+    user_email?: string;
+    attachments?: Array<{ filename: string; mime_type: string; size_bytes: number; base64: string }>;
+  }) =>
+    apiClient.post('/api/bot/l1/chat', {
+      message: args.message,
+      tenant_id: args.tenant_id,
+      tenant_product_id: args.tenant_product_id,
+      session_id: args.session_id,
+      l0_session_id: args.l0_session_id,
+      user_id: args.user_id,
+      user_email: args.user_email,
+      attachments: args.attachments || [],
+    }),
   handoff: (sessionId: string) =>
     apiClient.post('/api/bot/handoff', { session_id: sessionId }),
   getConversation: async (tenant_id: string, tenant_product_id: string, session_id: string) => {
@@ -40,6 +60,7 @@ export const botApi = {
     const data = await res.json();
     return { data } as {
       data: {
+        is_l1?: boolean;
         messages: Array<{
           id: string;
           from: string;

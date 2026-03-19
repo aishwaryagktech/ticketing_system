@@ -810,6 +810,7 @@ export async function upsertChannelSettings(req: AuthRequest, res: Response): Pr
     email_enabled,
     support_email,
     default_product_id,
+    human_support_channel,
   } = req.body || {};
   try {
     const data: any = {};
@@ -821,6 +822,7 @@ export async function upsertChannelSettings(req: AuthRequest, res: Response): Pr
     if (typeof email_enabled === 'boolean') data.email_enabled = email_enabled;
     if (support_email !== undefined) data.support_email = support_email ? String(support_email) : null;
     if (default_product_id !== undefined) data.default_product_id = default_product_id ? String(default_product_id) : null;
+    if (human_support_channel === 'chat' || human_support_channel === 'email') data.human_support_channel = human_support_channel;
 
     const settings = await prisma.tenantChannelSettings.upsert({
       where: { tenant_id: tenantId },
@@ -1126,7 +1128,8 @@ export async function crawlKbSource(req: AuthRequest, res: Response): Promise<vo
     }
     productId = t.product_id;
   }
-  const { url, tenant_product_id } = req.body as { url?: string; tenant_product_id?: string };
+  const { url, tenant_product_id, agent_level } = req.body as { url?: string; tenant_product_id?: string; agent_level?: string };
+  const agentLvl: 'l0' | 'l1' = agent_level === 'l1' ? 'l1' : 'l0';
   if (!url || typeof url !== 'string') {
     res.status(400).json({ error: 'url is required' });
     return;
@@ -1178,6 +1181,7 @@ export async function crawlKbSource(req: AuthRequest, res: Response): Promise<vo
         product_id: productId,
         tenant_id: tenantId ?? null,
         tenant_product_id: tenant_product_id ?? null,
+        agent_level: agentLvl,
         source_type: 'crawled',
         url,
         title,
@@ -1199,6 +1203,7 @@ export async function listKbSources(req: AuthRequest, res: Response): Promise<vo
   const tenantId = req.user?.tenant_id;
   const raw = req.query?.tenant_product_id;
   const tenant_product_id = typeof raw === 'string' ? raw.trim() : Array.isArray(raw) ? String(raw[0] || '').trim() : '';
+  const agent_level = req.query?.agent_level as string | undefined;
 
   if (!tenantId) {
     res.status(403).json({ error: 'Tenant required' });
@@ -1219,23 +1224,28 @@ export async function listKbSources(req: AuthRequest, res: Response): Promise<vo
   }
 
   try {
-    // Match: (1) sources for this tenant product, or (2) unscoped sources for this tenant (tenant_product_id null + tenant_id match)
-    // Don't require tenant_id when tenant_product_id matches (handles legacy rows with tenant_id null)
+    const whereClause: any = {
+      OR: [
+        { tenant_product_id },
+        { tenant_product_id: null, tenant_id: tenantId },
+      ],
+      AND: [
+        {
+          OR: [
+            { source_type: 'upload' },
+            { url: { startsWith: 'upload:' } },
+            { source_type: 'crawled' }
+          ],
+        },
+      ],
+    };
+
+    if (agent_level === 'l0' || agent_level === 'l1') {
+      whereClause.agent_level = agent_level;
+    }
+
     const sources = await prisma.kbSource.findMany({
-      where: {
-        OR: [
-          { tenant_product_id },
-          { tenant_product_id: null, tenant_id: tenantId },
-        ],
-        AND: [
-          {
-            OR: [
-              { source_type: 'upload' },
-              { url: { startsWith: 'upload:' } },
-            ],
-          },
-        ],
-      },
+      where: whereClause,
       orderBy: { updated_at: 'desc' },
       take: 100,
     });
@@ -1439,6 +1449,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
 
   const file = (req as any).file as { originalname: string; mimetype: string; buffer: Buffer } | undefined;
   const tenant_product_id = (req as any).body?.tenant_product_id as string | undefined;
+  const agentLvl: 'l0' | 'l1' = (req as any).body?.agent_level === 'l1' ? 'l1' : 'l0';
 
   if (!file) {
     res.status(400).json({ error: 'file is required' });
@@ -1483,6 +1494,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
         where: { id: existing.id },
         data: {
           source_type: 'upload',
+          agent_level: agentLvl,
           tenant_product_id: tenant_product_id ?? null,
           title: file.originalname,
           url: `upload:${file.originalname}`,
@@ -1497,6 +1509,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
         tenant_product_id: touched.tenant_product_id ?? null,
         title: touched.title ?? file.originalname,
         content_text: text,
+        agent_level: agentLvl,
       }).catch((e) => console.error('RAG index after upload update:', e));
       res.json(touched);
       return;
@@ -1507,6 +1520,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
         product_id: productId,
         tenant_id: tenantId ?? null,
         tenant_product_id: tenant_product_id ?? null,
+        agent_level: agentLvl,
         source_type: 'upload',
         url: `upload:${file.originalname}`,
         title: file.originalname,
@@ -1524,6 +1538,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
       tenant_product_id: source.tenant_product_id ?? null,
       title: source.title ?? file.originalname,
       content_text: text,
+      agent_level: agentLvl,
     }).catch((e) => console.error('RAG index after upload:', e));
 
     res.status(201).json(source);
@@ -1532,6 +1547,7 @@ export async function uploadKbDocument(req: AuthRequest, res: Response): Promise
     res.status(500).json({ error: 'Failed to process document' });
   }
 }
+
 
 export async function listKbArticles(req: AuthRequest, res: Response): Promise<void> {
   let productId = req.user?.product_id;
@@ -1629,5 +1645,42 @@ export async function setL0Model(req: AuthRequest, res: Response): Promise<void>
   } catch (e) {
     console.error('setL0Model error:', e);
     res.status(500).json({ error: 'Failed to save L0 model' });
+  }
+}
+
+export async function setL1Model(req: AuthRequest, res: Response): Promise<void> {
+  const tenantId = req.user?.tenant_id;
+  if (!tenantId) {
+    res.status(403).json({ error: 'Tenant required' });
+    return;
+  }
+  const { tenant_product_id, provider_name, model } = req.body as any;
+  if (!tenant_product_id || !provider_name || !model) {
+    res.status(400).json({ error: 'tenant_product_id, provider_name, model are required' });
+    return;
+  }
+  try {
+    const tp = await prisma.tenantProduct.findUnique({ where: { id: tenant_product_id } });
+    if (!tp || tp.tenant_id !== tenantId) {
+      res.status(404).json({ error: 'Tenant product not found' });
+      return;
+    }
+    const provider = await prisma.aiProviderConfig.findFirst({
+      where: { product_id: null, enabled: true, provider_name: String(provider_name) },
+    });
+    const allowed = provider && Array.isArray(provider.available_models)
+      ? (provider.available_models as any[]).map(String) : [];
+    if (!provider || !allowed.includes(String(model))) {
+      res.status(400).json({ error: 'Selected model is not available' });
+      return;
+    }
+    const updated = await prisma.tenantProduct.update({
+      where: { id: tenant_product_id },
+      data: { l1_provider: String(provider_name), l1_model: String(model) },
+    });
+    res.json(updated);
+  } catch (e) {
+    console.error('setL1Model error:', e);
+    res.status(500).json({ error: 'Failed to save L1 model' });
   }
 }
